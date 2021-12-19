@@ -9,7 +9,7 @@ class ServoArray:
   def reset(self):
     for i in range(4):
       self.kit.servo[i].angle = self.reset_angle[i]
-    time.sleep(0.05)
+    time.sleep(0.20)
     for i in range(4):
       self.kit.servo[i].angle = None
 
