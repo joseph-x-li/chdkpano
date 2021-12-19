@@ -14,4 +14,6 @@ class ServoArray:
       self.kit.servo[i].angle = None
 
 
-  def 
+if __name__ == "__main__":
+  servo = ServoArray()
+  servo.reset()
