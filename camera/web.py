@@ -4,7 +4,7 @@ import cv2
 from ppmreader import parse_ppm
 import numpy as np
 
-# st.title("Camera Array Controls")
+st.title("Camera Array Controls")
 def local_css(file_name):
   with open(file_name) as f:
     st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
@@ -18,32 +18,32 @@ image = np.rot90(cv2.resize(parse_ppm('../ppmtest.ppm'), (1600, 900)))
 status_image = np.zeros((20, 100, 3), np.uint8)
 status_image[:, :, 0] = 255
 
+
 with col0:
-  st.text("Cam_0")
   st.image(status_image, use_column_width=True)
-  st.image(image, use_column_width=True)
+  placeholder = st.empty()
+  placeholder.image(image, use_column_width=True, caption="Cam_0")
   
 with col1:
-  st.text("Cam_1")
   st.image(status_image, use_column_width=True)
-  st.image(image, use_column_width=True)
+  st.image(image, use_column_width=True, caption="Cam_1")
   
 with col2:
-  st.text("Cam_2")
   st.image(status_image, use_column_width=True)
-  st.image(image, use_column_width=True)
+  st.image(image, use_column_width=True, caption="Cam_2")
   
 with col3:
-  st.text("Cam_3")
   st.image(status_image, use_column_width=True)
-  st.image(image, use_column_width=True)
+  st.image(image, use_column_width=True, caption="Cam_3")
 
-slider_col, button_col = st.columns([8, 2])
+l_col, r_col = st.columns([7, 3])
 
-with slider_col:
-  st.select_slider("Delay", [f"{x}s" for x in range(11)], "0s")
+with l_col:
   st.select_slider("Exposure", ["Auto", "Stack"], "Auto")
-  st.select_slider("Zoom", [f"{x}x" for x in range(0, 10, 2)], "0x")
+  st.select_slider("FOV", ["Full", "Fit"], "Full")
+  st.select_slider("Zoom", ["1x"] + [f"{x}x" for x in range(2, 10, 2)], "1x")
 
-with button_col:
-  st.button("SHOOT")
+with r_col:
+  st.selectbox("Delay", [f"{x}s" for x in range(11)], index=0)
+  st.selectbox("Viewfinder Refresh", ["0.5s", "1s", "2s", "3s", "4s", "OFF"], index=2)
+  st.button("SHOOT", on_click=lambda: st.warning("Shoot!"))

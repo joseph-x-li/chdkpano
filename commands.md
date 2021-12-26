@@ -2,7 +2,8 @@
 
 Note: For Ubuntu, need to modify startup script since gphoto intercepts the connection to the cameras. See
 
-https://chdk.setepontos.com/index.php?topic=10664.20
+https://chdk.setepontos.com/index.php?topic=10664.20 or 
+https://tools.assembla.com/svn/chdkptp/trunk/INSTALL.TXT (search for "gphoto")
 
 
 ```
