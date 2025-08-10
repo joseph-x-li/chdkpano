@@ -23,9 +23,9 @@ class ServoArray:
       time.sleep(self.safe_delay)
       self.kit.servo[i].angle = None
 
-  def battery_position(self):
-    for i in range(4):
-      self.kit.servo[i].angle = self.battery_angle[i]
+  def set_position(self, angles):
+    for i, angle in zip(range(4), angles):
+      self.kit.servo[i].angle = angle
       time.sleep(self.safe_delay)
       self.kit.servo[i].angle = None
 
