@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 // TODO: Import from our chdkptp library when it's ready
 // use chdkptp::{Camera, PTPConnection};
 
+mod servo;
+use servo::ServoArray;
+
 #[derive(Serialize, Deserialize)]
 struct CameraInfo {
     name: String,
@@ -14,6 +17,12 @@ struct CameraInfo {
 struct CaptureRequest {
     exposure_time: f32,
     iso: u32,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ServoRequest {
+    position: String, // "reset", "power", "battery", or "custom"
+    angles: Option<[u16; 4]>, // Required for "custom" position
 }
 
 async fn hello() -> Result<HttpResponse> {
@@ -57,6 +66,33 @@ async fn capture_photo(capture_req: web::Json<CaptureRequest>) -> Result<HttpRes
     Ok(HttpResponse::Ok().json(response))
 }
 
+async fn control_servos(servo_req: web::Json<ServoRequest>) -> Result<HttpResponse> {
+    // Create servo array (this would typically be stored globally in a real app)
+    let mut servo_array = match ServoArray::new() {
+        Ok(servo) => servo,
+        Err(e) => return Ok(HttpResponse::InternalServerError().json(format!("Failed to initialize servos: {}", e))),
+    };
+    
+    let result = match servo_req.position.as_str() {
+        "reset" => servo_array.reset(),
+        "power" => servo_array.power_position(),
+        "battery" => servo_array.battery_position(),
+        "custom" => {
+            if let Some(angles) = servo_req.angles {
+                servo_array.set_position(angles)
+            } else {
+                return Ok(HttpResponse::BadRequest().json("Custom position requires angles array"));
+            }
+        }
+        _ => return Ok(HttpResponse::BadRequest().json("Invalid position. Use: reset, power, battery, or custom")),
+    };
+    
+    match result {
+        Ok(_) => Ok(HttpResponse::Ok().json(format!("Servos moved to {} position", servo_req.position))),
+        Err(e) => Ok(HttpResponse::InternalServerError().json(format!("Failed to control servos: {}", e))),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     println!("Starting Pano Server...");
@@ -72,6 +108,7 @@ async fn main() -> std::io::Result<()> {
             .route("/", web::get().to(hello))
             .route("/cameras", web::get().to(list_cameras))
             .route("/capture", web::post().to(capture_photo))
+            .route("/servos", web::post().to(control_servos))
     })
     .bind("127.0.0.1:8080")?
     .run()
