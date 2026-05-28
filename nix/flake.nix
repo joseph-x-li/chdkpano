@@ -21,8 +21,12 @@
 
   outputs = { self, nixpkgs, nix-darwin, rust-overlay, ... }:
     let
-      # Repo root is one level up from this flake (this file lives at nix/flake.nix).
-      repoRoot = ../.;
+      # The chdkpano Rust workspace (where Cargo.toml lives) sits next to
+      # this flake's directory inside the repo. Layout:
+      #   repo-root/
+      #   ├── chdkpano/    ← Rust workspace (server + client)
+      #   └── nix/         ← this flake
+      repoRoot = ../chdkpano;
 
       # The Pi's NixOS config. Apply specialisations after build to flip
       # between "field" (AP) and "desk" (client) modes.

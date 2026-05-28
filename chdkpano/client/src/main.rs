@@ -44,14 +44,15 @@ fn App() -> impl IntoView {
                 <h1 class="text-lg font-semibold tracking-tight">"chdkpano"</h1>
                 <nav class="flex gap-4">
                     <A href="/" attr:class="text-sm text-muted-foreground hover:text-foreground">"Cameras"</A>
-                    <A href="/api-docs" attr:class="text-sm text-muted-foreground hover:text-foreground">"API"</A>
+                // Plain <a> (not Leptos <A>) so the router doesn't intercept —
+                // /swagger-ui/ is served by the backend, not the WASM SPA.
+                <a href="/swagger-ui/" class="text-sm text-muted-foreground hover:text-foreground">"API"</a>
                 </nav>
             </header>
             <main class="max-w-6xl mx-auto px-6 py-6">
                 <Routes fallback=|| "Not found">
                     <Route path=path!("/") view=CameraListPage/>
                     <Route path=path!("/camera/:serial") view=CameraDetailPage/>
-                    <Route path=path!("/api-docs") view=ApiDocsPage/>
                 </Routes>
             </main>
         </Router>
@@ -1174,168 +1175,6 @@ fn render_live_state(s: LiveStateDto) -> impl IntoView {
             <summary class="cursor-pointer">"raw response"</summary>
             <pre class="font-mono mt-1 break-all whitespace-pre-wrap">{s.raw}</pre>
         </details>
-    }
-}
-
-// ─── API docs page ────────────────────────────────────────────────────
-#[component]
-fn ApiDocsPage() -> impl IntoView {
-    view! {
-        <h2 class="text-base font-semibold mb-1">"HTTP API"</h2>
-        <p class="text-sm text-muted-foreground mb-6">
-            "All responses are JSON unless the content-type says otherwise. "
-            ":serial is the camera's USB serial (from "
-            <code class="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">"GET /api/cameras"</code>
-            ")."
-        </p>
-
-        <div class="space-y-6">
-            <Endpoint
-                method="GET" path="/api/cameras"
-                summary="List Canon devices currently enumerated over USB. The serial returned here is the key for every other endpoint."
-                params=""
-                response=r#"[
-  {
-    "serial": "EB1A78FBC...",
-    "vendor_id": 1193, "product_id": 12881,
-    "bus_number": 20, "device_address": 5,
-    "manufacturer": "Canon Inc.",
-    "product": "Canon PowerShot ELPH 180"
-  }
-]"#
-            />
-
-            <Endpoint
-                method="GET" path="/api/info/:serial"
-                summary="Full PTP DeviceInfo plus the CHDK protocol version (if CHDK is active). Cached implicitly by the server's per-camera session pool — first call opens the PTP session (~50–100ms)."
-                params=""
-                response=r#"{
-  "serial": "...", "vendor_id": 1193, "product_id": 12881,
-  "ptp_standard_version": 256,
-  "vendor_extension_id": 11, "vendor_extension_version": 256,
-  "ptp_manufacturer": "Canon Inc.", "ptp_model": "Canon PowerShot ELPH 180",
-  "device_version": "1-15.0.1.0",
-  "operations_supported": [4097, 4098, 4099, ..., 39321],
-  "events_supported": [...], "device_properties_supported": [...],
-  "image_formats": [12289, 12294],
-  "chdk_advertised": true,
-  "chdk_version_major": 2, "chdk_version_minor": 6
-}"#
-            />
-
-            <Endpoint
-                method="GET" path="/api/live_state/:serial"
-                summary="Runtime state collected via a single Lua script: mode/zoom/exposure/battery/storage/focus/flash/etc. One PTP round-trip per call."
-                params=""
-                response=r#"{
-  "in_record": true, "is_movie": false, "mode_code": 257,
-  "zoom": 0, "exp_count": 4231, "vbatt_mv": 4096,
-  "image_dir": "A/DCIM/100CANON", "free_kb": 7654321,
-  "iso_mode": 0, "sv96": 0, "tv96": 0, "av96": 0,
-  "focus": 0, "propset": 5,
-  "flash_mode": 0, "flash_ready": false,
-  "is_shooting": false,
-  "raw": "true|false|257|0|4231|..."
-}"#
-            />
-
-            <Endpoint
-                method="GET" path="/api/viewport/:serial"
-                summary="One live-view frame. Y411 (UYVYYY) decoded to RGB, JPEG-encoded at q=80. Content-type is image/jpeg. If the camera isn't producing a viewport (e.g. playback mode), returns an SVG placeholder explaining why — content-type image/svg+xml. Either way the response is binary, not JSON."
-                params="cache-control: no-store (clients should cache-bust with ?t=<tick>)"
-                response="(binary: JPEG ~30–80 KB at 640×480, or SVG placeholder)"
-            />
-
-            <Endpoint
-                method="POST" path="/api/exec/:serial"
-                summary="Run arbitrary Lua on the camera via ExecuteScript. Times out after 20 s. Every message returned by the script (return value, errors, user prints) is included."
-                params=r#"request body: { "source": "return get_exp_count()" }"#
-                response=r#"{
-  "elapsed_ms": 47,
-  "messages": [
-    { "kind": "return", "value": { "type": "integer", "value": 4231 } }
-  ]
-}
-
-// kind ∈ {return, error, user}
-// value.type ∈ {nil, boolean, integer, string, table, unsupported}"#
-            />
-
-            <Endpoint
-                method="POST" path="/api/mode/record/:serial"
-                summary="Switch the camera into record mode (lens extends, sensor pipeline runs). Also forces LCD on so the viewport endpoint can produce frames. Idempotent — no-op if already in record."
-                params=""
-                response=r#"{ "mode": "record" }"#
-            />
-
-            <Endpoint
-                method="POST" path="/api/mode/play/:serial"
-                summary="Switch into playback mode (lens retracts, gallery on display). Viewport will return a placeholder until you switch back to record."
-                params=""
-                response=r#"{ "mode": "play" }"#
-            />
-
-            <Endpoint
-                method="GET" path="/api/files/:serial?path=A/DCIM/100CANON"
-                summary="Directory listing via on-camera Lua (os.listdir + os.stat). Directories are sorted first. If the camera build lacks os.listdir, returns entries:[] with a note explaining."
-                params="?path= — camera-side path (default A). Restricted to [A-Za-z0-9/._\\-+ ], max 255 chars."
-                response=r#"{
-  "path": "A/DCIM/100CANON",
-  "entries": [
-    { "name": "100___01", "is_dir": true, "size": 0 },
-    { "name": "IMG_0001.JPG", "is_dir": false, "size": 5783401 }
-  ],
-  "note": null
-}"#
-            />
-
-            <Endpoint
-                method="GET" path="/api/file/:serial?path=A/DCIM/100CANON/IMG_0001.JPG"
-                summary="Stream a file from the camera. Uses chdkptp::PtpSession::download_file (~4.75 MB/s end-to-end). Content-type is guessed from the extension (image/jpeg for .jpg, image/png for .png, image/x-canon-raw for .cr2/.crw/.dng, video/mp4 for .mov/.mp4, otherwise application/octet-stream)."
-                params="?path= — camera-side absolute path. Same restrictions as /api/files."
-                response="(binary, content-type per file extension; cache-control: private, max-age=60)"
-            />
-        </div>
-
-        <h3 class="text-sm font-semibold mt-10 mb-2">"Errors"</h3>
-        <p class="text-sm text-muted-foreground mb-3">
-            "All endpoints return "
-            <code class="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">"500"</code>
-            " + "
-            <code class="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">"{\"error\":\"...\"}"</code>
-            " on failure (camera not found, USB claim race, Lua timeout, script error, etc.). "
-            "The server invalidates its cached PTP session on most failures, so the next call re-opens cleanly."
-        </p>
-    }
-}
-
-#[component]
-fn Endpoint(
-    method: &'static str,
-    path: &'static str,
-    summary: &'static str,
-    params: &'static str,
-    response: &'static str,
-) -> impl IntoView {
-    let method_cls = match method {
-        "GET" => "bg-success/15 text-success border-success/30",
-        "POST" => "bg-warning/15 text-warning border-warning/30",
-        _ => "bg-muted text-muted-foreground border-border",
-    };
-    view! {
-        <section class="border-b border-border pb-5">
-            <div class="flex items-center gap-3 mb-1.5">
-                <span class=format!("font-mono text-xs font-semibold px-2 py-0.5 rounded border {method_cls}")>
-                    {method}
-                </span>
-                <code class="font-mono text-sm">{path}</code>
-            </div>
-            <p class="text-sm text-foreground mb-2">{summary}</p>
-            {(!params.is_empty()).then(|| view! {
-                <p class="text-xs text-muted-foreground font-mono mb-2">{params}</p>
-            })}
-            <pre class="bg-card border border-border rounded-md p-3 font-mono text-xs whitespace-pre-wrap break-all max-h-72 overflow-y-auto">{response}</pre>
-        </section>
     }
 }
 

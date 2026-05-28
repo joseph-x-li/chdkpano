@@ -164,27 +164,29 @@
 
 <h2 id="layout">Repository layout</h2>
 
-<div class="tree">nix/
-├── flake.nix                  ← entry point. Declares nixosConfigurations,
-│                                packages, darwinConfigurations.
-├── hosts/
-│   └── chdk-pi.nix            ← this Pi's specifics: hostname, SSH keys,
-│                                WiFi credentials, AP password.
-├── modules/
-│   ├── chdkpano.nix           ← reusable NixOS module: user, systemd unit,
-│   │                            udev rule, firewall.
-│   ├── network-base.nix       ← always-on: openssh, tailscale, avahi,
-│   │                            the `networking.chdkpano` option set.
-│   ├── network-field.nix      ← AP mode: hostapd + dnsmasq on wlan1,
-│   │                            wpa_supplicant on wlan0.
-│   └── network-desk.nix       ← client mode: wpa_supplicant on both radios,
-│                                no hostapd, sshd everywhere.
-├── pkgs/
-│   └── chdkpano.nix           ← the actual Rust + wasm derivation.
-├── darwin/
-│   └── builder.nix            ← nix-darwin config that turns your Mac
-│                                into a Linux builder via linux-builder VM.
-└── explainer.html             ← you are here.</div>
+<div class="tree">repo-root/
+├── chdkpano/                  ← Rust workspace (server/, client/, Cargo.toml)
+└── nix/
+    ├── flake.nix              ← entry point. Declares nixosConfigurations,
+    │                            packages, darwinConfigurations.
+    ├── hosts/
+    │   └── chdk-pi.nix        ← this Pi's specifics: hostname, SSH keys,
+    │                            WiFi credentials, AP password.
+    ├── modules/
+    │   ├── chdkpano.nix       ← reusable NixOS module: user, systemd unit,
+    │   │                        udev rule, firewall.
+    │   ├── network-base.nix   ← always-on: openssh, tailscale, avahi,
+    │   │                        the `networking.chdkpano` option set.
+    │   ├── network-field.nix  ← AP mode: hostapd + dnsmasq on wlan1,
+    │   │                        wpa_supplicant on wlan0.
+    │   └── network-desk.nix   ← client mode: wpa_supplicant on both radios,
+    │                            no hostapd, sshd everywhere.
+    ├── pkgs/
+    │   └── chdkpano.nix       ← the actual Rust + wasm derivation.
+    ├── darwin/
+    │   └── builder.nix        ← nix-darwin config that turns your Mac
+    │                            into a Linux builder via linux-builder VM.
+    └── explainer.html         ← you are here.</div>
 
 <p>
   The file split is intentional: <em>modules are reusable behaviour</em>,
@@ -213,15 +215,19 @@
     <code>specialisation</code>. See <a href="#specialisations">Specialisations</a>.</li>
 </ul>
 
-<p>One subtlety:</p>
+<p>One subtlety — the repo layout:</p>
 
-<pre>repoRoot = ../.;</pre>
+<pre>repo-root/
+├── chdkpano/    ← Rust workspace (Cargo.toml, server/, client/)
+└── nix/         ← this flake
+
+# in flake.nix
+repoRoot = ../chdkpano;</pre>
 
 <p>
-  The flake lives at <code>nix/flake.nix</code>, the chdkpano workspace
-  lives at the chdkpano root (one level up). We pass <code>repoRoot</code>
-  to the derivation so it can find <code>Cargo.toml</code>,
-  <code>Cargo.lock</code>, <code>client/</code>, and <code>server/</code>.
+  We pass <code>repoRoot</code> to the derivation so it can find
+  <code>Cargo.toml</code>, <code>Cargo.lock</code>, <code>client/</code>,
+  and <code>server/</code>.
 </p>
 
 <h2 id="host">hosts/chdk-pi.nix — your specifics</h2>
@@ -575,8 +581,8 @@ sync && diskutil eject /dev/diskN</pre>
 
 <h4>Just the chdkpano binary</h4>
 
-<pre>nix build .#chdkpano                       # build the package only
-nix copy --to ssh://pi@chdk-pi.local ./result   # push to Pi
+<pre>nix build ./nix#chdkpano                       # build the package only
+nix copy --to ssh://pi@chdk-pi.local ./result  # push to Pi
 ssh pi@chdk-pi.local 'sudo systemctl restart chdkpano'</pre>
 
 <p>Equivalent to the old <code>./deploy.sh</code> workflow but reproducible.</p>
