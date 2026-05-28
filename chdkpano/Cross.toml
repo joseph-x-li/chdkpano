@@ -1,0 +1,28 @@
+# Cross-compile config for `cross` (https://github.com/cross-rs/cross).
+#
+# Targets the Raspberry Pi Zero 2 W running Raspberry Pi OS 64-bit (Bookworm
+# or later). The Pi Zero 2 is aarch64 — for the *original* Pi Zero / Zero W
+# you would use `arm-unknown-linux-gnueabihf` instead and expect noticeably
+# rougher crate support.
+#
+# Build the server with:
+#   cross build --release --target aarch64-unknown-linux-gnu -p chdkpano-server
+#
+# `nusb` on Linux links against libudev, so the cross Docker image needs the
+# headers + .pc files for the target arch — that's what the pre-build does.
+#
+# The path dep `chdkptp = { path = "../../../chdkptp_rs" }` lives outside the
+# workspace. Cross 0.2.5+ auto-mounts path-deps detected in Cargo.toml so this
+# Just Works. If it doesn't (older cross, weird symlinks), uncomment the
+# `[build.env] volumes` line and run `CHDKPTP_DIR=$(realpath ../chdkptp_rs)
+# cross build ...` so cross mounts that path into the container.
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install --assume-yes --no-install-recommends libudev-dev:$CROSS_DEB_ARCH pkg-config",
+]
+
+# [build.env]
+# volumes = ["CHDKPTP_DIR"]

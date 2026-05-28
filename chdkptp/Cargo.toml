@@ -1,8 +1,0 @@
-[package]
-name = "chdkptp"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-rusb = "0.9.4"
-thiserror = "2.0.12"

@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>chdkpano — NixOS Build Explainer</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1a1a1a;
+    --muted: #6b6b6b;
+    --rule: #e3e3df;
+    --accent: #2a4d8f;
+    --accent-soft: #e6edf8;
+    --good: #2d5a2d;
+    --good-soft: #e4f0e4;
+    --warn: #8a6d00;
+    --warn-soft: #fbf3d4;
+    --danger: #b8341e;
+    --danger-soft: #fdecea;
+    --code-bg: #f1efe9;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55;
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 6rem;
+    font-size: 16px;
+  }
+  h1, h2, h3, h4 {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+  }
+  h1 { font-size: 2.1rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.5rem; margin: 3rem 0 0.75rem; padding-bottom: 0.35rem; border-bottom: 1px solid var(--rule); }
+  h3 { font-size: 1.15rem; margin: 1.75rem 0 0.5rem; }
+  h4 { font-size: 0.95rem; margin: 1.25rem 0 0.4rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  p { margin: 0.6rem 0; }
+  .subtitle { color: var(--muted); margin-top: 0; font-size: 1.05rem; }
+  code, pre, .mono { font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace; font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 0.08em 0.35em; border-radius: 3px; }
+  pre {
+    background: var(--code-bg);
+    padding: 1rem 1.1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+  th, td { text-align: left; padding: 0.45rem 0.7rem; border-bottom: 1px solid var(--rule); font-size: 0.95em; vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.04em; }
+  ul, ol { padding-left: 1.4rem; }
+  li { margin: 0.3rem 0; }
+  .callout {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 0.8rem 1rem;
+    margin: 1rem 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+  .callout.danger { border-color: var(--danger); background: var(--danger-soft); }
+  .callout.good { border-color: var(--good); background: var(--good-soft); }
+  .callout > :first-child { margin-top: 0; }
+  .callout > :last-child { margin-bottom: 0; }
+  .tree {
+    background: var(--code-bg);
+    padding: 1rem 1.2rem;
+    border-radius: 6px;
+    white-space: pre;
+    font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace;
+    font-size: 0.85em;
+    overflow-x: auto;
+    line-height: 1.5;
+  }
+  .pill { display: inline-block; padding: 0.1em 0.55em; border-radius: 999px; font-size: 0.78em; font-weight: 600; }
+  .pill.field { background: var(--good-soft); color: var(--good); }
+  .pill.desk { background: var(--accent-soft); color: var(--accent); }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 2rem 0; }
+  .toc {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 0.8rem 1.2rem;
+    margin: 1.5rem 0 2rem;
+    font-size: 0.92em;
+    columns: 2;
+  }
+  .toc a { text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<h1>chdkpano on NixOS</h1>
+<p class="subtitle">
+  A guide to the custom Nix setup for running chdkpano on a Raspberry Pi Zero 2 W
+  with dual radios, AP/client mode switching, and reproducible SD-card images
+  built from a Mac.
+</p>
+
+<div class="toc">
+  <a href="#why">Why NixOS</a><br>
+  <a href="#layout">Repository layout</a><br>
+  <a href="#flake">flake.nix</a><br>
+  <a href="#host">hosts/chdk-pi.nix</a><br>
+  <a href="#chdkpano-module">modules/chdkpano.nix</a><br>
+  <a href="#chdkpano-pkg">pkgs/chdkpano.nix</a><br>
+  <a href="#net-base">modules/network-base.nix</a><br>
+  <a href="#net-field">modules/network-field.nix</a><br>
+  <a href="#net-desk">modules/network-desk.nix</a><br>
+  <a href="#darwin">darwin/builder.nix</a><br>
+  <a href="#radios">The dual-radio architecture</a><br>
+  <a href="#specialisations">Specialisations explained</a><br>
+  <a href="#build">Build + flash flow</a><br>
+  <a href="#deploy">Iterating after first flash</a><br>
+  <a href="#secrets">Secrets &amp; WiFi credentials</a><br>
+  <a href="#ops">Common operations</a><br>
+  <a href="#gotchas">Gotchas</a><br>
+  <a href="#glossary">Glossary</a>
+</div>
+
+<h2 id="why">Why NixOS, finally</h2>
+
+<p>
+  The chdkpano rig started as a single Pi with a couple of services and a
+  bootstrap script — see <code>pi-bootstrap.sh</code> in the repo root for
+  that earlier approach. It was the right call at that size: imperative,
+  cheap to learn, no toolchain on the Mac to set up.
+</p>
+
+<p>
+  The rig as currently designed has:
+</p>
+<ul>
+  <li>Two WiFi radios (built-in + USB dongle)</li>
+  <li>Two operating modes (field-mode AP / desk-mode client) that need to switch atomically</li>
+  <li>hostapd, dnsmasq, avahi, Tailscale, openssh, udev, systemd unit, firewall rules</li>
+  <li>WiFi creds, SSH keys, captive-portal redirects, multiple SSID priorities</li>
+  <li>A Rust binary + a wasm bundle that have to be built somewhere</li>
+</ul>
+
+<p>
+  That's ~12 interacting concerns. The bash bootstrap version of this would
+  be a 300-line file with conditionals, version checks, and brittle
+  "did the last edit work?" state. NixOS makes all of it one git-tracked,
+  rebuild-rollback-able artifact.
+</p>
+
+<div class="callout good">
+  <strong>The pivot point.</strong> When you have &gt; ~5 interacting
+  config files spread across multiple services, the imperative bootstrap
+  script stops being simpler than the Nix module. We crossed that line
+  when dual-radio + specialisations + Tailscale entered the picture.
+</div>
+
+<h2 id="layout">Repository layout</h2>
+
+<div class="tree">nix/
+├── flake.nix                  ← entry point. Declares nixosConfigurations,
+│                                packages, darwinConfigurations.
+├── hosts/
+│   └── chdk-pi.nix            ← this Pi's specifics: hostname, SSH keys,
+│                                WiFi credentials, AP password.
+├── modules/
+│   ├── chdkpano.nix           ← reusable NixOS module: user, systemd unit,
+│   │                            udev rule, firewall.
+│   ├── network-base.nix       ← always-on: openssh, tailscale, avahi,
+│   │                            the `networking.chdkpano` option set.
+│   ├── network-field.nix      ← AP mode: hostapd + dnsmasq on wlan1,
+│   │                            wpa_supplicant on wlan0.
+│   └── network-desk.nix       ← client mode: wpa_supplicant on both radios,
+│                                no hostapd, sshd everywhere.
+├── pkgs/
+│   └── chdkpano.nix           ← the actual Rust + wasm derivation.
+├── darwin/
+│   └── builder.nix            ← nix-darwin config that turns your Mac
+│                                into a Linux builder via linux-builder VM.
+└── explainer.html             ← you are here.</div>
+
+<p>
+  The file split is intentional: <em>modules are reusable behaviour</em>,
+  <em>hosts are specific values</em>, and <em>pkgs are derivations</em>.
+  If you ever build a second Pi, you add <code>hosts/chdk-pi-2.nix</code>,
+  reuse all the modules, and the diff is whatever's actually different
+  about that Pi.
+</p>
+
+<h2 id="flake">flake.nix — entry point</h2>
+
+<p>
+  Composes the host config from modules. The interesting bits:
+</p>
+
+<ul>
+  <li><strong>Two outputs</strong>: a <code>nixosConfiguration</code>
+    (the Pi's whole-system definition) and a <code>packages.sdImage</code>
+    (the flashable image artifact derived from it).</li>
+  <li><strong>nixpkgs-unstable</strong> because the Pi Zero 2 W appreciates
+    a recent kernel for hostapd/dwc2/usb-wifi-driver freshness. Pin to a
+    release branch if you want stability over recency.</li>
+  <li><strong>rust-overlay</strong> input — pins the Rust nightly the leptos
+    client needs, so the build is reproducible across Macs and CI.</li>
+  <li><strong>Field mode is the default boot</strong>, desk mode is a
+    <code>specialisation</code>. See <a href="#specialisations">Specialisations</a>.</li>
+</ul>
+
+<p>One subtlety:</p>
+
+<pre>repoRoot = ../.;</pre>
+
+<p>
+  The flake lives at <code>nix/flake.nix</code>, the chdkpano workspace
+  lives at the chdkpano root (one level up). We pass <code>repoRoot</code>
+  to the derivation so it can find <code>Cargo.toml</code>,
+  <code>Cargo.lock</code>, <code>client/</code>, and <code>server/</code>.
+</p>
+
+<h2 id="host">hosts/chdk-pi.nix — your specifics</h2>
+
+<p>
+  This is the only file that needs values touched on first setup. Everything
+  marked <code>TODO</code>:
+</p>
+
+<table>
+  <tr><th>Field</th><th>Where to get it</th></tr>
+  <tr><td><code>networking.hostName</code></td><td>Whatever you want to ssh to.</td></tr>
+  <tr><td><code>time.timeZone</code></td><td>e.g. <code>"America/New_York"</code>; see <code>tzselect</code>.</td></tr>
+  <tr><td><code>users.users.pi.openssh.authorizedKeys.keys</code></td><td><code>cat ~/.ssh/id_ed25519.pub</code> on the Mac.</td></tr>
+  <tr><td><code>networking.wireless.networks</code></td><td>Each home/phone/office SSID you want the Pi to auto-join in desk mode.</td></tr>
+  <tr><td><code>networking.chdkpano.apPassword</code></td><td>The WPA2 password the Pi will broadcast in field mode (min 8 chars).</td></tr>
+</table>
+
+<p>
+  <code>users.mutableUsers = false;</code> makes the declarative user/password
+  state authoritative — running <code>passwd</code> on the Pi has no lasting
+  effect, since the next rebuild reverts it. Fine for a hands-off rig; if
+  you want to change passwords from the device itself, flip that to
+  <code>true</code> and use <code>initialHashedPassword</code> instead.
+</p>
+
+<h2 id="chdkpano-module">modules/chdkpano.nix</h2>
+
+<p>
+  Wires the chdkpano package into the OS:
+</p>
+
+<ol>
+  <li><strong>System user + group</strong> (<code>chdkpano:chdkpano</code>)
+    with <code>plugdev</code> + <code>dialout</code> supplementary groups.</li>
+  <li><strong>udev rule</strong> giving local users <code>0666</code> on every
+    Canon USB device. This is what lets nusb actually open the camera
+    without root. The alternative is <code>uaccess</code> tagging — slightly
+    more correct, more brittle.</li>
+  <li><strong>systemd unit</strong> running the server as the <code>chdkpano</code>
+    user, with light hardening (ProtectHome, ProtectSystem=strict, PrivateTmp).
+    The <code>DeviceAllow</code> entries explicitly grant USB device access
+    inside the hardened sandbox.</li>
+  <li><strong>Firewall hole</strong> for the configured port (default 3030).</li>
+</ol>
+
+<div class="callout warn">
+  <strong>If USB stops working after a rebuild</strong>, comment out the
+  <code>DeviceAllow</code> / <code>ProtectSystem</code> lines first.
+  systemd's device sandbox is the most likely culprit when nusb starts
+  failing to open devices.
+</div>
+
+<h2 id="chdkpano-pkg">pkgs/chdkpano.nix — the derivation</h2>
+
+<p>
+  This is the spiciest file in the scaffold. It builds two things in one
+  derivation:
+</p>
+
+<ul>
+  <li><code>chdkpano-server</code> (Rust → aarch64-linux ELF binary)</li>
+  <li><code>client/dist/</code> (Rust → wasm32-unknown-unknown via leptos +
+    Tailwind CSS via the trunk build pipeline)</li>
+</ul>
+
+<p>
+  Both are produced by one <code>rustPlatform.buildRustPackage</code>
+  invocation with a <code>postBuild</code> hook that runs
+  <code>trunk build --release --offline</code> inside the same build
+  sandbox.
+</p>
+
+<p>Two specific things you'll likely have to iterate on the first time:</p>
+
+<ol>
+  <li>
+    <strong>The path dep on chdkptp_rs.</strong>
+    <code>server/Cargo.toml</code> currently has
+    <code>chdkptp = { path = "../../../chdkptp_rs" }</code> — Nix can't
+    reach a path outside the source closure. Three fixes, pick one:
+    <ul>
+      <li><strong>(a)</strong> Vendor <code>chdkptp_rs/</code> as a sibling of
+        the chdkpano repo and write a small wrapper derivation that
+        symlinks both into the build sandbox.</li>
+      <li><strong>(b)</strong> Publish <code>chdkptp</code> to crates.io
+        and change the dep to <code>chdkptp = "0.1"</code>. Cleanest.</li>
+      <li><strong>(c)</strong> Switch to a git dep
+        (<code>chdkptp = { git = "...", rev = "..." }</code>) and add an
+        <code>outputHashes</code> entry in <code>cargoLock</code>.</li>
+    </ul>
+  </li>
+  <li>
+    <strong>Trunk + tailwind in the build sandbox.</strong>
+    <code>trunk build --offline</code> needs every binary it shells out
+    to (<code>wasm-bindgen</code>, <code>wasm-opt</code>, <code>npx</code> for
+    tailwind v4) to be available in <code>nativeBuildInputs</code> AND
+    findable via <code>PATH</code>. The scaffold lists them; if any
+    are missing, the error will mention the binary name.
+  </li>
+</ol>
+
+<div class="callout">
+  <strong>Pragmatic shortcut for first iteration:</strong> skip the
+  full Nix build and run <code>cross build</code> +
+  <code>trunk build --release</code> on the Mac like before, scp the
+  artifacts to a fixed path on the Pi (e.g.
+  <code>/var/lib/chdkpano</code>), and set
+  <code>services.chdkpano.package</code> to a
+  <code>pkgs.runCommand</code> wrapper that just copies from that path.
+  Lose some reproducibility, gain the ability to iterate on the rest of
+  the Nix setup without fighting the build.
+</div>
+
+<h2 id="net-base">modules/network-base.nix</h2>
+
+<p>Always-on stuff regardless of mode:</p>
+
+<ul>
+  <li><strong>openssh</strong> — keys only, no passwords, no root login.</li>
+  <li><strong>avahi (mDNS)</strong> — publishes <code>chdk-pi.local</code> on
+    every interface that has a link-local address. So you can
+    <code>ssh pi@chdk-pi.local</code> from the Mac and browse to
+    <code>http://chdk-pi.local:3030</code> from any phone on the AP.</li>
+  <li><strong>Tailscale</strong> — declarative on/off. Provide
+    <code>authKeyFile</code> for first-boot auto-join, or run
+    <code>tailscale up</code> manually after first boot. Once joined,
+    you can ssh the Pi from anywhere with internet, no matter what WiFi
+    it's currently on.</li>
+  <li><strong>The <code>networking.chdkpano</code> option block</strong> —
+    shared vocabulary (apSsid, apPassword, apInterface, clientInterface,
+    apSubnet) used by both network-field and network-desk modules.</li>
+  <li><strong>NetworkManager disabled</strong> — we use
+    <code>networking.wireless</code> = wpa_supplicant directly. Mixing
+    the two causes both to lose fights against the other.</li>
+</ul>
+
+<h2 id="net-field">modules/network-field.nix <span class="pill field">default</span></h2>
+
+<p>This is the default-boot mode. The Pi:</p>
+
+<ol>
+  <li>Runs hostapd on <code>wlan1</code> (USB dongle), broadcasting your
+    SSID with a static IP of <code>${apSubnet}.1</code>.</li>
+  <li>Runs dnsmasq on the same interface, handing out DHCP leases
+    <code>.10</code>–<code>.50</code> and resolving every hostname to itself
+    (helpful for captive-portal-style redirects).</li>
+  <li>Keeps wpa_supplicant on <code>wlan0</code> (built-in) so the Pi
+    <em>also</em> joins any known SSID in range — meaning deploys still
+    work if you carry the rig back into home WiFi range without rebooting.</li>
+  <li>Binds sshd to loopback only (Tailscale is your remote-ssh channel).
+    Strangers on the AP can't poke at port 22.</li>
+  <li>Disables IP forwarding — AP clients can only reach the Pi itself,
+    they do <em>not</em> route through wlan0 to your home network.
+    Intentional isolation.</li>
+</ol>
+
+<div class="callout warn">
+  <strong>Channel choice.</strong> Hardcoded to channel 6 for 2.4 GHz.
+  If you're in a city and your AP throughput is bad, run a wifi-analyzer
+  app and switch to whichever of 1/6/11 is least crowded. Don't pick
+  anything else — they overlap.
+</div>
+
+<h2 id="net-desk">modules/network-desk.nix <span class="pill desk">specialisation</span></h2>
+
+<p>Swap-target for when the rig comes back to your desk:</p>
+
+<ol>
+  <li><code>mkForce</code>-disables hostapd and dnsmasq.</li>
+  <li>Adds <code>wlan1</code> to the wpa_supplicant client list — both
+    radios act as clients now.</li>
+  <li>Removes the static IP on <code>wlan1</code> (DHCP from your home AP).</li>
+  <li>Unbinds sshd's listen restriction — you're inside your trusted LAN,
+    listen on everything.</li>
+</ol>
+
+<p>Switch into it on the Pi:</p>
+
+<pre>sudo /run/booted-system/specialisation/desk/bin/switch-to-configuration switch</pre>
+
+<p>Switch back:</p>
+
+<pre>sudo /run/current-system/bin/switch-to-configuration switch</pre>
+
+<p>
+  Both swaps take ~3–5 seconds. No reboot. The kernel doesn't blink;
+  systemd just stops + starts the services that changed.
+</p>
+
+<h2 id="darwin">darwin/builder.nix</h2>
+
+<p>
+  Your Mac can't natively produce aarch64-linux binaries (different OS,
+  different ABI). Three ways to fix that:
+</p>
+
+<table>
+  <tr><th>Option</th><th>Speed</th><th>Setup pain</th></tr>
+  <tr><td>QEMU binfmt emulation</td><td>~30 min image builds</td><td>1 line</td></tr>
+  <tr><td>Remote aarch64 Linux box you ssh into</td><td>fast</td><td>You need the box</td></tr>
+  <tr><td><strong>nix-darwin linux-builder</strong></td><td>~3–10 min</td><td>~30 min one-time</td></tr>
+</table>
+
+<p>
+  <code>linux-builder</code> spawns a small NixOS VM on the Mac via the
+  macOS Virtualization framework (no Docker, no UTM, no third-party
+  hypervisor). The nix-daemon transparently offloads
+  <code>aarch64-linux</code> builds to it. You write
+  <code>nix build .#sdImage</code> and don't think about it.
+</p>
+
+<p>Setup:</p>
+
+<pre># on the Mac, install nix and nix-darwin
+curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install
+nix run nix-darwin -- switch --flake ./nix#mac-builder
+
+# verify the builder VM is alive
+sudo launchctl print system/org.nixos.linux-builder | head -10
+nix store ping --store ssh-ng://linux-builder</pre>
+
+<p>
+  After that, every subsequent <code>nix build</code> for a Linux target
+  uses the VM. <code>linux-builder</code> persists across reboots (it's
+  a launchd service).
+</p>
+
+<h2 id="radios">The dual-radio architecture</h2>
+
+<p>
+  Pi Zero 2 W has one onboard 2.4 GHz radio. Adding a USB WiFi dongle gives
+  you a second radio. The interface naming convention:
+</p>
+
+<table>
+  <tr><th>iface</th><th>Radio</th><th>Role in field mode</th><th>Role in desk mode</th></tr>
+  <tr><td><code>wlan0</code></td><td>Built-in BCM43436</td><td>wpa_supplicant client (joins home/phone WiFi if in range)</td><td>wpa_supplicant client</td></tr>
+  <tr><td><code>wlan1</code></td><td>USB dongle</td><td>hostapd AP — broadcasts <code>chdkpano</code></td><td>wpa_supplicant client</td></tr>
+</table>
+
+<div class="callout warn">
+  <strong>Dongle drivers.</strong> Some Realtek USB WiFi chips
+  (RTL8821CU, RTL8822BU, etc.) need out-of-tree kernel modules. nixos-unstable
+  ships modern kernels with most of these in-tree, but if your dongle
+  doesn't enumerate, <code>dmesg | grep -i usb</code> and add the relevant
+  driver to <code>boot.extraModulePackages</code> in network-base.nix.
+  See the commented-out entries there for the common ones.
+</div>
+
+<p>
+  Why two radios at all? Because in field mode the Pi <em>also</em> wants
+  to be a client (for Tailscale-over-internet if you're in range of a
+  hotspot). Pi Zero 2 W's single radio can't do both modes simultaneously —
+  hence the USB dongle.
+</p>
+
+<h2 id="specialisations">Specialisations explained</h2>
+
+<p>
+  A NixOS specialisation is essentially "a second whole-system config
+  that shares a kernel + bootloader with the parent." Useful when two
+  configs differ in many places but you don't want a reboot to switch.
+  The bootloader entry lets you boot directly into a specialisation;
+  <code>switch-to-configuration switch</code> can flip live.
+</p>
+
+<pre>specialisation.desk.configuration = {
+  imports = [ ./modules/network-desk.nix ];
+};</pre>
+
+<p>What this produces in the image:</p>
+
+<div class="tree">/run/current-system           ← what's running right now
+/run/booted-system            ← what booted (same as current unless you switched)
+/run/booted-system/specialisation/
+└── desk/                     ← the desk variant, ready to activate
+    ├── bin/switch-to-configuration
+    └── ...</div>
+
+<p>Flip mode:</p>
+
+<pre># field → desk
+sudo /run/booted-system/specialisation/desk/bin/switch-to-configuration switch
+
+# desk → field (i.e. go back to the parent / default)
+sudo /run/current-system/bin/switch-to-configuration switch</pre>
+
+<p>
+  Both are atomic. systemd stops services that were removed, starts
+  services that were added, reloads units that changed. Failures are
+  rolled back automatically by the activation script.
+</p>
+
+<h2 id="build">Build + flash flow (first time)</h2>
+
+<ol>
+  <li>Edit <code>nix/hosts/chdk-pi.nix</code> — fill in TODOs (SSH key,
+    WiFi password, AP password, timezone).</li>
+  <li><pre>cd nix && nix build .#sdImage</pre>
+    First build is slow (downloads aarch64 toolchain via the
+    linux-builder VM, builds everything from scratch). Subsequent builds
+    hit the substituter cache for almost everything.</li>
+  <li>Result is a zstd-compressed image:
+    <pre>ls -lh result/sd-image/
+# nixos-sd-image-24.11-aarch64-linux.img.zst</pre></li>
+  <li>Flash it:
+    <pre># find the SD card (will be /dev/diskN — be careful!)
+diskutil list
+diskutil unmountDisk /dev/diskN
+zstd -dc result/sd-image/*.img.zst | sudo dd of=/dev/rdiskN bs=4m status=progress
+sync && diskutil eject /dev/diskN</pre>
+  </li>
+  <li>Boot the Pi. First boot takes ~60s while the rootfs grows to fill
+    the card. mDNS comes up around the 90s mark.</li>
+  <li>From the Mac: <code>ssh pi@chdk-pi.local</code> — keys-only, no
+    password prompt. Browse to <code>http://chdk-pi.local:3030</code>
+    from any device on the AP.</li>
+</ol>
+
+<h2 id="deploy">Iterating after first flash</h2>
+
+<p>
+  You almost never want to reflash. Two faster paths exist:
+</p>
+
+<h4>Build on Mac, push activation to Pi</h4>
+
+<pre>nixos-rebuild switch --flake ./nix#chdk-pi \
+    --target-host pi@chdk-pi.local \
+    --build-host localhost \
+    --use-remote-sudo</pre>
+
+<p>
+  Builds the new system closure on the Mac (using linux-builder),
+  rsyncs the diff to the Pi, runs <code>switch-to-configuration</code>
+  on the Pi. Usually completes in ~30 seconds for code-only changes
+  because the substituter cache handles the unchanged closure.
+</p>
+
+<h4>Build on Pi (slow but no Mac dependency)</h4>
+
+<pre>ssh pi@chdk-pi.local 'sudo nixos-rebuild switch --flake github:you/chdkpano#chdk-pi'</pre>
+
+<p>
+  The Pi pulls the flake from GitHub and builds locally. The 512 MB RAM
+  becomes a serious problem here — image-scale rebuilds will OOM.
+  Code-only rebuilds usually fit. <strong>Add a swap file (1–2 GB)
+  before relying on this.</strong>
+</p>
+
+<h4>Just the chdkpano binary</h4>
+
+<pre>nix build .#chdkpano                       # build the package only
+nix copy --to ssh://pi@chdk-pi.local ./result   # push to Pi
+ssh pi@chdk-pi.local 'sudo systemctl restart chdkpano'</pre>
+
+<p>Equivalent to the old <code>./deploy.sh</code> workflow but reproducible.</p>
+
+<h2 id="secrets">Secrets &amp; WiFi credentials</h2>
+
+<p>Tiers, by escalating paranoia:</p>
+
+<table>
+  <tr><th>Tier</th><th>Mechanism</th><th>Use when</th></tr>
+  <tr><td>0</td><td>Cleartext in the flake (<code>psk = "..."</code>)</td><td>Personal rig, private flake repo. Simplest.</td></tr>
+  <tr><td>1</td><td>Precomputed PSK (<code>pskRaw = "&lt;hash&gt;"</code> via <code>wpa_passphrase</code>)</td><td>Want to push the flake to a public repo without leaking the literal password. Cracking the hash is still trivial offline.</td></tr>
+  <tr><td>2</td><td>Runtime file (<code>environmentFile = "/etc/wpa.env"</code>)</td><td>Secret stays out of the Nix store. File goes on the SD card via a separate channel (manual scp).</td></tr>
+  <tr><td>3</td><td>sops-nix / agenix — encrypted in the flake, decrypted on the Pi using a key burned into the image</td><td>Multi-Pi fleet, CI builds the image, want git-safe encrypted secrets.</td></tr>
+</table>
+
+<p>
+  The scaffold uses tier 0. Upgrading is a one-file change once you outgrow
+  it.
+</p>
+
+<h2 id="ops">Common operations</h2>
+
+<h4>Add a package to the Pi (e.g. <code>tcpdump</code>)</h4>
+<pre># in hosts/chdk-pi.nix
+environment.systemPackages = with pkgs; [ tcpdump strace btop ];
+# then on the Mac
+nixos-rebuild switch --flake ./nix#chdk-pi --target-host pi@chdk-pi.local</pre>
+
+<h4>Rotate Tailscale auth key</h4>
+<pre># generate a new key at https://login.tailscale.com/admin/settings/keys
+# on the Pi:
+echo 'tskey-auth-NEWKEY' | sudo tee /etc/tailscale-auth.key
+sudo systemctl restart tailscaled</pre>
+
+<h4>Switch from field to desk mode and back</h4>
+<pre>sudo /run/booted-system/specialisation/desk/bin/switch-to-configuration switch
+# do desk things, then later:
+sudo /run/current-system/bin/switch-to-configuration switch</pre>
+
+<h4>Roll back a bad rebuild</h4>
+<pre># at the Pi shell
+sudo nixos-rebuild switch --rollback
+# or pick a specific generation:
+sudo nix-env --profile /nix/var/nix/profiles/system --list-generations
+sudo /nix/var/nix/profiles/system-N-link/bin/switch-to-configuration switch
+# nuclear option: reboot, hold shift at u-boot, pick previous generation</pre>
+
+<h4>Garbage-collect old generations on the Pi</h4>
+<pre># keep last 5
+sudo nix-collect-garbage -d --delete-older-than 14d</pre>
+
+<h2 id="gotchas">Gotchas worth knowing in advance</h2>
+
+<ul>
+  <li><strong>512 MB RAM is tight for NixOS at runtime.</strong> Add a 1–2 GB
+    swap file on the SD card. <code>nixos-rebuild</code> on-device for big
+    closures will OOM without it.</li>
+  <li><strong>SD-card wear.</strong> NixOS writes the journal aggressively
+    by default. Consider <code>services.journald.extraConfig =
+    "Storage=volatile";</code> for production rigs, or a USB SSD for the
+    rootfs.</li>
+  <li><strong>Hostapd vs NetworkManager.</strong> They fight. We disabled
+    NM in network-base.nix; don't re-enable.</li>
+  <li><strong>wpa_supplicant only sees networks you've declared.</strong>
+    There's no captive-portal-style "let me pick a SSID from a list" UX
+    on the device. Add new SSIDs to hosts/chdk-pi.nix and rebuild.</li>
+  <li><strong>USB WiFi dongles vary wildly.</strong> Realtek
+    RTL8188CUS-based dongles are most likely to just work. RTL8821AU/CU
+    needs <code>rtl8821cu</code> module. The driver fight is the most
+    common reason a fresh setup hangs at <em>hostapd waiting for wlan1</em>.</li>
+  <li><strong>Linux-builder VM eats Mac resources.</strong> The default
+    config in <code>darwin/builder.nix</code> reserves 4 cores + 6 GB RAM.
+    Lower those if your Mac feels sluggish.</li>
+  <li><strong>First image build downloads ~3 GB.</strong> Of nixpkgs +
+    kernel sources + rust toolchain. After that the substituter cache
+    handles 99% of fetches.</li>
+</ul>
+
+<h2 id="glossary">Glossary</h2>
+
+<dl>
+  <dt><strong>flake</strong></dt>
+  <dd>A directory with <code>flake.nix</code> + <code>flake.lock</code>. The lock pins every input (nixpkgs, etc.) to an exact commit so builds are reproducible across machines and time.</dd>
+
+  <dt><strong>derivation</strong></dt>
+  <dd>The "recipe" for building one thing. <code>pkgs/chdkpano.nix</code> returns a derivation. Nix evaluates it, downloads inputs, runs the build in a sandbox, stores the output at <code>/nix/store/&lt;hash&gt;-chdkpano-0.1.0/</code>.</dd>
+
+  <dt><strong>module</strong></dt>
+  <dd>A reusable function from <code>{ config, lib, pkgs, ... }</code> to a partial system config. <code>modules/chdkpano.nix</code> is a module. Composing modules is how NixOS' "this system has these properties" definition gets built.</dd>
+
+  <dt><strong>option</strong></dt>
+  <dd>A typed knob a module exposes (<code>lib.mkOption</code>). <code>services.chdkpano.port</code> is an option. Other modules can read it via <code>config.services.chdkpano.port</code> and override it via <code>services.chdkpano.port = ...</code>.</dd>
+
+  <dt><strong>generation</strong></dt>
+  <dd>A snapshot of the activated system. Every <code>nixos-rebuild switch</code> creates a new one and points <code>/run/current-system</code> at it. Old generations stay around (and bootable) until <code>nix-collect-garbage</code> removes them.</dd>
+
+  <dt><strong>specialisation</strong></dt>
+  <dd>A variant configuration that shares a kernel + bootloader with its parent. Useful for "two modes of the same system, swap atomically without rebooting." We use it for field vs desk.</dd>
+
+  <dt><strong>substituter</strong></dt>
+  <dd>A binary cache. <code>cache.nixos.org</code> stores prebuilt versions of almost every public derivation; Nix fetches from there instead of building locally when hashes match.</dd>
+
+  <dt><strong>linux-builder</strong></dt>
+  <dd>A nix-darwin-provided NixOS VM that runs on macOS. Lets your Mac transparently offload <code>aarch64-linux</code> / <code>x86_64-linux</code> builds without you ever logging into the VM.</dd>
+
+  <dt><strong>mkForce</strong></dt>
+  <dd>An override priority modifier. <code>mkForce false</code> beats a regular <code>true</code> from another module. Used in <code>network-desk.nix</code> to forcibly disable hostapd that <code>network-field.nix</code> had enabled.</dd>
+</dl>
+
+<hr>
+
+<p style="color: var(--muted); font-size: 0.9em; text-align: center; margin-top: 3rem;">
+  Last updated by the scaffold script. Edit
+  <code>nix/explainer.html</code> as the setup evolves.
+</p>
+
+</body>
+</html>
