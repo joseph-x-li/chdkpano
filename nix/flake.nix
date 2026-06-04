@@ -17,9 +17,21 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    # `chdkptp_rs` lives in a sibling git repo, NOT inside this one. Nix can't
+    # see paths outside the declared source closure, so we explicitly declare
+    # the chdkptp_rs directory as a non-flake input — `flake = false` tells
+    # Nix "this is just source code, not another flake to evaluate."
+    #
+    # The hash of this input contributes to the chdkpano package's identity,
+    # so any change in chdkptp_rs busts the cache and triggers a rebuild.
+    chdkptp-src = {
+      url = "path:/Users/josephli/Github/chdkptp_rs";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs, nix-darwin, rust-overlay, ... }:
+  outputs = { self, nixpkgs, nix-darwin, rust-overlay, chdkptp-src, ... }:
     let
       # The chdkpano Rust workspace (where Cargo.toml lives) sits next to
       # this flake's directory inside the repo. Layout:
@@ -54,6 +66,7 @@
               enable = true;
               package = pkgs.callPackage ./pkgs/chdkpano.nix {
                 repoRoot = repoRoot;
+                chdkptpSrc = chdkptp-src;
               };
             };
 
@@ -86,7 +99,10 @@
           system = "aarch64-linux";
           overlays = [ rust-overlay.overlays.default ];
         };
-        in pkgs.callPackage ./pkgs/chdkpano.nix { repoRoot = repoRoot; };
+        in pkgs.callPackage ./pkgs/chdkpano.nix {
+          repoRoot = repoRoot;
+          chdkptpSrc = chdkptp-src;
+        };
 
       # nix-darwin config for the Mac that builds aarch64-linux images.
       # See nix/darwin/builder.nix for what this enables. After applying:

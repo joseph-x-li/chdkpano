@@ -84,23 +84,68 @@ pub fn switch_mode(target: u32) -> String {
     )
 }
 
-/// Take one photo. Used by the pano array's `shoot_all` — each camera runs
-/// this independently; for true simultaneity see `clock_sync_shoot` below.
-pub const SHOOT_NOW: &str = "shoot() return 'ok'";
-
-/// Read the camera's monotonic clock (ms since boot) — used by clock-sync
-/// shooting to compute the offset between camera time and host time.
+/// Read the camera's monotonic tick (`get_tick_count`) — used by clock-sync
+/// calibration to compute the offset between camera time and host time.
 pub const READ_CLOCK_MS: &str = "return get_tick_count()";
 
-/// Synchronized shoot. The host computes a future camera-local timestamp
-/// (after offset calibration) and passes it as `target_ms`. Each camera
-/// busy-waits until its tick matches, then shoots. Replaces the chdkptp
-/// "clock sync" trick from the original Lua harness.
-pub fn shoot_at_camera_ms(target_ms: i64) -> String {
+/// The combined per-camera clock-sync script: warmup → busy-wait → fire, all
+/// in ONE `lua_State`. This is a faithful port of `shoot_all_clocksync.rs`
+/// in chdkptp_rs.
+///
+/// The single-script constraint is load-bearing: CHDK auto-releases held keys
+/// when the `lua_State` is destroyed, so splitting warmup and fire across two
+/// `ExecuteScript` calls would silently drop the half-press. Keeping the
+/// half-press held across the busy-wait is what makes the shutter fire the
+/// instant the spin loop exits.
+///
+/// `flash` forces the flash on (`FLASH_MODE` 1) when true, or off (2) when
+/// false — the multi-camera shot wants a deterministic flash state, not auto.
+///
+/// Returns nine comma-separated numbers plus the image directory:
+///   `t_start,warmup_done,t_exit,t_done,exp_at_start,exp_after_mode,exp_after_half,exp_before_fire,exp_after,<image_dir>`
+/// The five `exp_count` checkpoints let the host detect stray actuations, and
+/// `image_dir` + `exp_after` together name the file this shot wrote
+/// (`<image_dir>/IMG_<exp_after>.JPG`) — no SD-card scan needed.
+pub fn clocksync_combined(target_tick: i64, flash: bool) -> String {
+    // CHDK FLASH_MODE propcase: 0 = auto, 1 = on, 2 = off.
+    let flash_mode = if flash { 1 } else { 2 };
     format!(
-        "local target = {target_ms} \
+        "local t_start = get_tick_count() \
+         local exp_at_start = get_exp_count() \
+         if not get_mode() then \
+           switch_mode_usb(1) \
+           sleep(3500) \
+         end \
+         local exp_after_mode = get_exp_count() \
+         local ok, p = pcall(require, 'propcase') \
+         if ok then \
+           if p.FLASH_MODE then set_prop(p.FLASH_MODE, {flash_mode}) end \
+           if p.WB_MODE    then set_prop(p.WB_MODE, 1)    end \
+           if p.DRIVE_MODE then set_prop(p.DRIVE_MODE, 0) end \
+         end \
+         if type(set_iso_mode)    == 'function' then set_iso_mode(1)     end \
+         if type(set_sv96)        == 'function' then set_sv96(411)        end \
+         if type(set_tv96_direct) == 'function' then set_tv96_direct(576) end \
+         press('shoot_half') \
+         local af_start = get_tick_count() \
+         while not get_shooting() and (get_tick_count() - af_start) < 5000 do \
+           sleep(50) \
+         end \
+         sleep(200) \
+         local warmup_done = get_tick_count() \
+         local exp_after_half = get_exp_count() \
+         local target = {target_tick} \
          while get_tick_count() < target do end \
-         shoot() \
-         return get_tick_count()"
+         local t_exit = get_tick_count() \
+         local exp_before_fire = get_exp_count() \
+         press('shoot_full') \
+         sleep(150) \
+         release('shoot_full') \
+         release('shoot_half') \
+         local t_done = get_tick_count() \
+         sleep(1800) \
+         local exp_after = get_exp_count() \
+         local imgdir = get_image_dir() or '' \
+         return t_start..','..warmup_done..','..t_exit..','..t_done..','..exp_at_start..','..exp_after_mode..','..exp_after_half..','..exp_before_fire..','..exp_after..','..imgdir"
     )
 }

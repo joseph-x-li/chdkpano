@@ -15,7 +15,7 @@ use std::sync::Arc;
     tag = "viewport",
     params(("serial" = String, description = "Camera USB serial")),
     responses(
-        (status = 200, description = "One live-view frame, JPEG @ q=80, ~30–80 KB at 640×480.",
+        (status = 200, description = "One live-view frame, JPEG @ q=80. Anamorphic ~720×240 (non-square pixels meant to display at 4:3); the client corrects the aspect.",
             content_type = "image/jpeg", body = Vec<u8>),
         (status = 200, description = "If viewport unavailable, returns an SVG placeholder explaining why.",
             content_type = "image/svg+xml", body = String),

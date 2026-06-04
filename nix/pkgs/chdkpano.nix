@@ -2,21 +2,22 @@
 #   $out/bin/chdkpano-server           — the axum HTTP server (Rust → aarch64-linux)
 #   $out/share/chdkpano/dist/          — the leptos wasm client (trunk build --release)
 #
-# Building Rust + wasm under Nix is the spiciest part of this whole setup.
-# Two specific things will likely need iteration on first build:
+# The chdkpano workspace has a path dep on `../../../chdkptp_rs` (a sibling
+# git repo, not inside chdkpano). Nix's hermetic build sandbox can't see
+# anything outside the declared source closure, so we explicitly pull
+# chdkptp_rs in as `chdkptpSrc` (a flake input) and stitch the two source
+# trees together inside a tiny `runCommand` derivation that mirrors the
+# original on-disk layout exactly. That way the path `../../../chdkptp_rs`
+# inside server/Cargo.toml resolves correctly inside the sandbox.
 #
-#   1. `cargoLock` needs `outputHashes` for any git/path deps. The chdkpano
-#      workspace has a path dep on `../../../chdkptp_rs` which Nix can't
-#      reach unless you either:
-#        a. Vendor chdkptp_rs into the source closure (cleanest)
-#        b. Publish chdkptp to crates.io and bump to a registry dep
-#        c. Use `fetchFromGitHub` for chdkptp_rs and pin a commit
-#      The scaffold below assumes (a): we depend on a sibling
-#      `chdkptp_rs/` directory at the same level as `chdkpano/`.
+# The deep `outer/chdkpano/chdkpano/` nesting is artificial — it exists only
+# to make `../../../chdkptp_rs` from the workspace's server/ subdirectory
+# land on the right place. If we ever bring chdkptp_rs into the chdkpano
+# monorepo as a sibling, this layout dance goes away.
 #
-#   2. The wasm client uses leptos which requires nightly Rust. We use
-#      rust-overlay to pin a known-good nightly. tailwindcss v4 also runs
-#      under the hood — trunk's hooks invoke it.
+# Still likely to need iteration on first build: trunk's `--offline` mode
+# needs every shelled-out binary (wasm-bindgen, wasm-opt, npx tailwindcss)
+# present in `nativeBuildInputs`.
 { lib
 , stdenv
 , rustPlatform
@@ -27,9 +28,10 @@
 , wasm-bindgen-cli
 , binaryen
 , nodejs
-, callPackage
+, runCommand
 , makeWrapper
-, repoRoot     # passed from flake.nix
+, repoRoot      # the chdkpano Rust workspace (Cargo.toml lives here)
+, chdkptpSrc    # the sibling chdkptp_rs source tree (flake input)
 }:
 
 let
@@ -39,24 +41,40 @@ let
     extensions = [ "rust-src" ];
     targets = [ "wasm32-unknown-unknown" ];
   };
+
+  # Reconstruct the on-disk layout that server/Cargo.toml's path dep expects:
+  #
+  #   mergedSrc/
+  #   └── outer/                ← fake parent that makes ../../../resolve right
+  #       ├── chdkpano/         ← was the chdkpano repo on disk
+  #       │   └── chdkpano/     ← the Rust workspace
+  #       │       ├── Cargo.toml
+  #       │       ├── server/   ← server/Cargo.toml says path = "../../../chdkptp_rs"
+  #       │       └── client/
+  #       └── chdkptp_rs/       ← reached via 3 levels up from server/
+  #
+  # `sourceRoot` below tells buildRustPackage to cd into the workspace dir.
+  mergedSrc = runCommand "chdkpano-with-chdkptp" { } ''
+    mkdir -p $out/outer/chdkpano
+    cp -r ${repoRoot}/. $out/outer/chdkpano/chdkpano
+    cp -r ${chdkptpSrc}/. $out/outer/chdkptp_rs
+    # Strip any leftover write-protection so cargo can update timestamps etc.
+    chmod -R u+w $out
+  '';
 in
 
 rustPlatform.buildRustPackage {
   pname = "chdkpano";
   version = "0.1.0";
 
-  # Source = the chdkpano repo root. Includes server/, client/, Cargo.lock.
-  # If chdkptp_rs is a sibling directory, also pull it into the closure
-  # via a small wrapper derivation — see explainer.html for the pattern.
-  src = repoRoot;
+  src = mergedSrc;
+  # cd into the actual workspace after the source is unpacked.
+  sourceRoot = "chdkpano-with-chdkptp/outer/chdkpano/chdkpano";
 
   cargoLock = {
     lockFile = "${repoRoot}/Cargo.lock";
-    # Path deps don't have hashes. Git deps need one — uncomment and run
-    # `nix build` to see the expected hash, then paste it in.
-    # outputHashes = {
-    #   "chdkptp-0.1.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-    # };
+    # Path deps don't need outputHashes — they're rebuilt from source every
+    # time. Only git deps (`{ git = "..."; }`) need a hash here.
   };
 
   nativeBuildInputs = [

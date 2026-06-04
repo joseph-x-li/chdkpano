@@ -66,9 +66,10 @@
     alejandra       # nix formatter
   ];
 
-  # nix-darwin housekeeping
+  # nix-darwin housekeeping. Recent nix-darwin manages nix-daemon
+  # unconditionally when `nix.enable` is on — `services.nix-daemon.enable`
+  # is now a hard assertion failure.
   programs.zsh.enable = true;
-  services.nix-daemon.enable = true;
 
   system.stateVersion = 5;     # TODO: bump if nix-darwin's docs say so
 }

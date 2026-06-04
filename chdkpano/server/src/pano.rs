@@ -19,6 +19,72 @@ use std::time::Instant;
 pub const SLOT_COUNT: usize = 4;
 pub type Slots = [Option<String>; SLOT_COUNT];
 
+/// Fixed rig camera serials by physical slot (cameras 1–4). MUST stay in sync
+/// with the client's `RIG_SERIALS` so the API's slot indices line up with the
+/// grid the user sees. Dummy entries are placeholders for cameras that aren't
+/// wired yet — they simply fail `get_or_open` and report as errored slots.
+pub const RIG_SERIALS: [&str; SLOT_COUNT] = [
+    "DUMMY_SERIAL_CAM1",
+    "FA934BBFD3514EF19CA0B81E72A213F7", // camera 2
+    "D8359439FEB74E79899654E98FD41CA1", // camera 3
+    "524EE2E7D9E34C6194BB238558A9EF91", // camera 4
+];
+
+/// Default NTP-style offset samples per camera; the best-RTT sample wins.
+pub const CLOCKSYNC_OFFSET_SAMPLES: usize = 20;
+/// Default lead before the synchronized shot fires. Must exceed the slowest
+/// camera's warmup (~700 ms from record mode) plus margin — see the
+/// `shoot_all_clocksync` example in chdkptp_rs for the reasoning.
+pub const CLOCKSYNC_LEAD_MS: f64 = 2500.0;
+
+/// Per-camera result of a clock-synced shoot — the same diagnostics the
+/// chdkptp_rs `shoot_all_clocksync` example prints, surfaced over the API.
+#[derive(Debug, Clone, Default)]
+pub struct ClockSyncSlot {
+    pub idx: usize,
+    pub serial: Option<String>,
+    /// "empty" | "fired" | "missed" | "err"
+    pub status: &'static str,
+    pub offset_ms: Option<f64>,
+    pub offset_rtt_ms: Option<f64>,
+    pub target_tick: Option<i64>,
+    /// Camera-side time spent in the busy-wait spin loop (warmup → target).
+    pub busy_wait_ms: Option<i64>,
+    /// Busy-wait exit, converted back to host wall-clock via the offset.
+    pub actual_exit_host_ms: Option<f64>,
+    /// `actual_exit_host_ms - target_host_ms` (positive = fired late).
+    pub overshoot_ms: Option<f64>,
+    /// Whether `exp_count` increased — i.e. the shutter actually actuated.
+    pub fired: Option<bool>,
+    /// Camera path of the file this shot wrote, derived natively from the
+    /// shoot's `get_image_dir()` + `exp_count` (no SD-card scan).
+    pub image_path: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Full report from a clock-synced shoot.
+#[derive(Debug, Clone)]
+pub struct ClockSyncReport {
+    pub slots: Vec<ClockSyncSlot>,
+    /// Spread of busy-wait exits across cameras that exited — the headline
+    /// "how synchronized was it" number, in host milliseconds.
+    pub inter_camera_skew_ms: Option<f64>,
+    pub target_host_ms: f64,
+    pub lead_ms: f64,
+    pub samples: usize,
+}
+
+/// Intermediate per-slot state between offset calibration and shot dispatch.
+enum Calibrated {
+    Empty,
+    Err(Error),
+    Ok {
+        cam: Arc<Camera>,
+        offset_ms: f64,
+        rtt_ms: f64,
+    },
+}
+
 pub struct PanoArray {
     slots: Mutex<Slots>,
     registry: Arc<CameraRegistry>,
@@ -55,8 +121,11 @@ impl<T> SlotOutcome<T> {
 
 impl PanoArray {
     pub fn new(registry: Arc<CameraRegistry>) -> Arc<Self> {
+        // Pre-wire the fixed rig serials so the shoot endpoint targets the
+        // four cameras out of the box. Slots stay reassignable at runtime.
+        let slots: Slots = RIG_SERIALS.map(|s| Some(s.to_string()));
         Arc::new(Self {
-            slots: Mutex::new(Default::default()),
+            slots: Mutex::new(slots),
             registry,
         })
     }
@@ -136,90 +205,174 @@ impl PanoArray {
         v.try_into().unwrap_or_else(|_| unreachable!("len = SLOT_COUNT"))
     }
 
-    /// Naive parallel shoot. Each camera receives `shoot()` independently,
-    /// kicked off concurrently. Worst-case skew across cameras is whatever
-    /// Tokio's task scheduling + USB-bus contention give you — typically
-    /// 50–200 ms apart on chdkpano's setup. For tighter sync see `shoot_all_synced`.
-    pub async fn shoot_all(&self) -> [SlotOutcome<()>; SLOT_COUNT] {
-        let cams = self.cameras().await;
-        let futs = cams.into_iter().map(|outcome| async move {
-            match outcome {
-                SlotOutcome::Empty => SlotOutcome::Empty,
-                SlotOutcome::Err(e) => SlotOutcome::Err(e),
-                SlotOutcome::Ok(cam) => match cam.shoot_now().await {
-                    Ok(()) => SlotOutcome::Ok(()),
-                    Err(e) => SlotOutcome::Err(e),
-                },
-            }
-        });
-        let v: Vec<SlotOutcome<()>> = join_all(futs).await;
-        v.try_into().unwrap_or_else(|_| unreachable!("len = SLOT_COUNT"))
-    }
-
-    /// Clock-synced shoot. Replicates the original chdkptp Lua harness
-    /// trick:
-    ///   1. Read each camera's monotonic tick AND measure host time around
-    ///      the read to estimate the camera-to-host offset.
-    ///   2. Compute a host-time deadline a bit in the future
-    ///      (`lead_ms` parameter; default 500 ms is enough to overcome
-    ///      PTP round-trip jitter at modest serial USB speeds).
-    ///   3. Translate the host deadline to each camera's local clock and
-    ///      send `shoot_at(deadline)`. Each camera busy-waits to its own
-    ///      target tick, then fires.
+    /// The "real" synchronized shoot — a port of chdkptp_rs's
+    /// `shoot_all_clocksync` example into async/axum land.
     ///
-    /// Per-camera sync is usually within ~5–20 ms of each other this way,
-    /// vs ~100 ms+ with `shoot_all`.
-    pub async fn shoot_all_synced(&self, lead_ms: i64) -> Result<[SlotOutcome<()>; SLOT_COUNT]> {
+    /// Two phases with an implicit barrier (the first `join_all` completes
+    /// before the second starts — the async equivalent of the example's
+    /// thread `Barrier`):
+    ///   1. **Calibrate** every camera in parallel: take `samples` NTP-style
+    ///      `get_tick_count()` probes, keep the offset from the lowest-RTT one.
+    ///   2. Pick a single host deadline `lead_ms` in the future, translate it
+    ///      to each camera's tick, and dispatch the combined warmup→busy-wait→
+    ///      fire script (one `lua_State`, half-press held throughout).
+    ///
+    /// Cameras should already be in record mode (the viewfinder ensures this);
+    /// otherwise a cold mode-switch can overrun the default lead.
+    pub async fn shoot_all_clocksync(
+        &self,
+        lead_ms: f64,
+        samples: usize,
+        flash: bool,
+    ) -> ClockSyncReport {
+        let snap = self.snapshot();
         let cams = self.cameras().await;
+        let t0 = Instant::now();
+        let samples = samples.max(1);
 
-        // Step 1: calibrate each camera. Per-camera offset = camera_ms - host_ms.
-        let host_clock = Instant::now();
-        let offset_futs = cams.iter().map(|outcome| async move {
+        // ── Phase 1: per-camera tick-offset calibration (parallel) ──────────
+        let cal_futs = cams.into_iter().map(|outcome| async move {
             match outcome {
-                SlotOutcome::Empty => SlotOutcome::Empty,
-                SlotOutcome::Err(e) => SlotOutcome::Err(e.clone()),
+                SlotOutcome::Empty => Calibrated::Empty,
+                SlotOutcome::Err(e) => Calibrated::Err(e),
                 SlotOutcome::Ok(cam) => {
-                    let host_before = host_clock.elapsed().as_millis() as i64;
-                    let cam_clock = cam.read_clock_ms().await;
-                    let host_after = host_clock.elapsed().as_millis() as i64;
-                    match cam_clock {
-                        Ok(cam_ms) => {
-                            // Best estimate of the camera-vs-host offset assumes
-                            // PTP transit was symmetric: the camera's read happened
-                            // ~midway between our two host samples.
-                            let host_midpoint = (host_before + host_after) / 2;
-                            SlotOutcome::Ok(cam_ms - host_midpoint)
+                    let mut best: Option<(f64, f64)> = None; // (offset, rtt)
+                    for _ in 0..samples {
+                        let h1 = host_ms(t0);
+                        match cam.read_tick_count().await {
+                            Ok(tick) => {
+                                let h2 = host_ms(t0);
+                                let rtt = h2 - h1;
+                                // Assume symmetric transit: the camera read
+                                // happened ~midway between our two host samples.
+                                let offset = tick as f64 - (h1 + h2) / 2.0;
+                                if best.map_or(true, |(_, br)| rtt < br) {
+                                    best = Some((offset, rtt));
+                                }
+                            }
+                            Err(e) => return Calibrated::Err(e),
                         }
-                        Err(e) => SlotOutcome::Err(e),
+                    }
+                    match best {
+                        Some((offset_ms, rtt_ms)) => Calibrated::Ok {
+                            cam,
+                            offset_ms,
+                            rtt_ms,
+                        },
+                        None => Calibrated::Err(Error::new("no offset samples")),
                     }
                 }
             }
         });
-        let offsets: Vec<SlotOutcome<i64>> = join_all(offset_futs).await;
+        let calibrated: Vec<Calibrated> = join_all(cal_futs).await;
 
-        // Step 2: pick a host deadline lead_ms in the future.
-        let host_deadline = host_clock.elapsed().as_millis() as i64 + lead_ms;
+        // Barrier passed: all offsets known. Pick the shared host deadline.
+        let target_host_ms = host_ms(t0) + lead_ms;
 
-        // Step 3: each camera shoots at host_deadline + its own offset.
-        let shoot_futs = cams
-            .into_iter()
-            .zip(offsets.into_iter())
-            .map(|(cam_out, off_out)| async move {
-                match (cam_out, off_out) {
-                    (SlotOutcome::Empty, _) | (_, SlotOutcome::Empty) => SlotOutcome::Empty,
-                    (SlotOutcome::Err(e), _) | (_, SlotOutcome::Err(e)) => SlotOutcome::Err(e),
-                    (SlotOutcome::Ok(cam), SlotOutcome::Ok(offset)) => {
-                        let cam_target = host_deadline + offset;
-                        match cam.shoot_at(cam_target).await {
-                            Ok(()) => SlotOutcome::Ok(()),
-                            Err(e) => SlotOutcome::Err(e),
+        // ── Phase 2: dispatch the combined shoot script (parallel) ──────────
+        let shoot_futs =
+            calibrated
+                .into_iter()
+                .enumerate()
+                .map(|(idx, cal)| {
+                    let serial = snap[idx].clone();
+                    async move {
+                        match cal {
+                            Calibrated::Empty => ClockSyncSlot {
+                                idx,
+                                status: "empty",
+                                ..Default::default()
+                            },
+                            Calibrated::Err(e) => ClockSyncSlot {
+                                idx,
+                                serial,
+                                status: "err",
+                                error: Some(e.message().to_string()),
+                                ..Default::default()
+                            },
+                            Calibrated::Ok {
+                                cam,
+                                offset_ms,
+                                rtt_ms,
+                            } => {
+                                let target_tick = (target_host_ms + offset_ms).round() as i64;
+                                let mut slot = ClockSyncSlot {
+                                    idx,
+                                    serial,
+                                    status: "err",
+                                    offset_ms: Some(offset_ms),
+                                    offset_rtt_ms: Some(rtt_ms),
+                                    target_tick: Some(target_tick),
+                                    ..Default::default()
+                                };
+                                match cam.clocksync_shoot_raw(target_tick, flash).await {
+                                    Ok((ret, errors)) => {
+                                        if let Some((p, image_dir)) =
+                                            ret.as_deref().and_then(parse_combined_return)
+                                        {
+                                            let (warmup_done, t_exit) = (p[1], p[2]);
+                                            let (exp_at_start, exp_after) = (p[4], p[8]);
+                                            let actual_exit = t_exit as f64 - offset_ms;
+                                            let fired = exp_after > exp_at_start;
+                                            slot.busy_wait_ms = Some(t_exit - warmup_done);
+                                            slot.actual_exit_host_ms = Some(actual_exit);
+                                            slot.overshoot_ms = Some(actual_exit - target_host_ms);
+                                            slot.fired = Some(fired);
+                                            slot.status = if fired { "fired" } else { "missed" };
+                                            // Name the file this shot wrote, natively.
+                                            if fired && !image_dir.is_empty() {
+                                                slot.image_path = Some(format!(
+                                                    "{image_dir}/IMG_{exp_after:04}.JPG"
+                                                ));
+                                            }
+                                        }
+                                        if !errors.is_empty() {
+                                            slot.error = Some(errors.join("; "));
+                                        }
+                                    }
+                                    Err(e) => slot.error = Some(e.message().to_string()),
+                                }
+                                slot
+                            }
                         }
                     }
-                }
-            });
-        let results: Vec<SlotOutcome<()>> = join_all(shoot_futs).await;
-        Ok(results
-            .try_into()
-            .unwrap_or_else(|_| unreachable!("len = SLOT_COUNT")))
+                });
+        let slots: Vec<ClockSyncSlot> = join_all(shoot_futs).await;
+
+        // Headline: spread of busy-wait exits across cameras that exited.
+        let exits: Vec<f64> = slots.iter().filter_map(|s| s.actual_exit_host_ms).collect();
+        let inter_camera_skew_ms = if exits.len() >= 2 {
+            let min = exits.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max = exits.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            Some(max - min)
+        } else {
+            None
+        };
+
+        ClockSyncReport {
+            slots,
+            inter_camera_skew_ms,
+            target_host_ms,
+            lead_ms,
+            samples,
+        }
     }
+}
+
+fn host_ms(t0: Instant) -> f64 {
+    t0.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Parse the return from `lua_scripts::clocksync_combined`: nine numeric
+/// fields followed by the image directory string. Returns `(nums, image_dir)`.
+fn parse_combined_return(s: &str) -> Option<([i64; 9], String)> {
+    // splitn(10) keeps the dir intact even in the (impossible) case it has a
+    // comma; a too-short string fails the `?` on a missing numeric field.
+    let mut it = s.splitn(10, ',');
+    let mut nums = [0i64; 9];
+    for slot in nums.iter_mut() {
+        *slot = it.next()?.trim().parse().ok()?;
+    }
+    let image_dir = it.next().unwrap_or("").trim().to_string();
+    Some((nums, image_dir))
 }

@@ -70,7 +70,9 @@ impl Camera {
 
     // ---------- Live viewport ----------
 
-    /// One viewport frame, JPEG-encoded at q=80. ~30–80 KB at 640×480.
+    /// One viewport frame, JPEG-encoded at q=80. The CHDK live buffer is an
+    /// anamorphic ~720×240 (non-square pixels meant to display at 4:3); we
+    /// encode it as-is and let the client correct the aspect.
     pub async fn viewport_jpeg(&self) -> Result<Vec<u8>> {
         let mut s = self.session.lock().await;
         let frame = match s.get_display_data(LV_TFR_VIEWPORT).await {
@@ -173,29 +175,57 @@ impl Camera {
         }
     }
 
-    // ---------- Clock / shoot helpers (used by PanoArray) ----------
+    // ---------- Clock-sync shoot helpers (used by PanoArray) ----------
 
-    pub async fn read_clock_ms(&self) -> Result<i64> {
-        let raw = self
-            .exec_lua_for_string(lua_scripts::READ_CLOCK_MS, 3_000)
-            .await?;
-        // Lua tostring of an integer; on some builds it may include a "." for floats.
-        raw.trim()
-            .parse::<i64>()
-            .or_else(|_| raw.trim().parse::<f64>().map(|f| f as i64))
-            .map_err(|_| Error::new(format!("camera returned non-numeric clock: {raw:?}")))
+    /// One offset-probe round-trip: the camera's current `get_tick_count()`,
+    /// returned as the raw `Integer` value. Used by the clock-sync calibration.
+    pub async fn read_tick_count(&self) -> Result<i64> {
+        let mut s = self.session.lock().await;
+        match s.execute_script_wait(lua_scripts::READ_CLOCK_MS, 2_000).await {
+            Ok(msgs) => {
+                drop(s);
+                msgs.iter()
+                    .find_map(|m| match m {
+                        ScriptMsg::Return {
+                            value: ScriptValue::Integer(v),
+                            ..
+                        } => Some(*v as i64),
+                        _ => None,
+                    })
+                    .ok_or_else(|| Error::new("camera did not return an integer tick"))
+            }
+            Err(e) => {
+                drop(s);
+                self.invalidate_self();
+                Err(e.into())
+            }
+        }
     }
 
-    /// Fire a single shot immediately.
-    pub async fn shoot_now(&self) -> Result<()> {
-        self.exec_lua(lua_scripts::SHOOT_NOW, 30_000).await?;
-        Ok(())
-    }
-
-    /// Fire a shot at a specific camera-local tick. Used by `PanoArray::shoot_all_synced`.
-    pub async fn shoot_at(&self, camera_target_ms: i64) -> Result<()> {
-        let lua = lua_scripts::shoot_at_camera_ms(camera_target_ms);
-        self.exec_lua(&lua, 30_000).await?;
-        Ok(())
+    /// Run the combined warmup→busy-wait→fire script for a clock-synced shoot.
+    /// Returns `(return_string, error_strings)` — the 9-value diagnostic string
+    /// from `clocksync_combined` plus any script errors, parsed by the caller.
+    pub async fn clocksync_shoot_raw(
+        &self,
+        target_tick: i64,
+        flash: bool,
+    ) -> Result<(Option<String>, Vec<String>)> {
+        let lua = lua_scripts::clocksync_combined(target_tick, flash);
+        let msgs = self.exec_lua(&lua, 25_000).await?;
+        let mut errors = Vec::new();
+        let mut ret = None;
+        for m in &msgs {
+            match m {
+                ScriptMsg::Error { text, category, .. } => {
+                    errors.push(format!("[{category:?}] {text}"))
+                }
+                ScriptMsg::Return {
+                    value: ScriptValue::String(s),
+                    ..
+                } => ret = Some(s.clone()),
+                _ => {}
+            }
+        }
+        Ok((ret, errors))
     }
 }
