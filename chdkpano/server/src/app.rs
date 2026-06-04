@@ -66,9 +66,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pano/state", get(routes::pano::get_state))
         .route("/api/pano/autofill", post(routes::pano::autofill))
         .route("/api/pano/slot/:idx", put(routes::pano::assign_slot))
-        .route("/api/pano/shoot", post(routes::pano::shoot))
-        .route("/api/pano/shoot_synced", post(routes::pano::shoot_synced))
+        .route("/api/pano/shoot_clocksync", post(routes::pano::shoot_clocksync))
         .route("/api/pano/viewport/:idx", get(routes::pano::viewport_slot))
+        // ---- wifi (radio status + client reconfigure) ----
+        .route("/api/wifi", get(routes::wifi::wifi_status))
+        .route("/api/wifi/client", post(routes::wifi::set_client))
         // ---- wiring ----
         .with_state(state)
         // SPA fallback: real files where they exist, else index.html + 200

@@ -7,3 +7,4 @@ pub mod files;
 pub mod live_state;
 pub mod pano;
 pub mod viewport;
+pub mod wifi;

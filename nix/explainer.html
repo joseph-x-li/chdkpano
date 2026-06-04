@@ -96,9 +96,66 @@
   }
   .toc a { text-decoration: none; }
   .toc a:hover { text-decoration: underline; }
+  .nav {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    background: rgba(250, 250, 247, 0.9);
+    backdrop-filter: saturate(180%) blur(8px);
+    border-bottom: 1px solid var(--rule);
+    margin: -2rem -1.5rem 2rem;
+    padding: 0.75rem 1.5rem;
+  }
+  .nav .brand { font-weight: 700; letter-spacing: -0.01em; margin-right: auto; }
+  .nav a {
+    text-decoration: none;
+    color: var(--muted);
+    font-size: 0.92rem;
+    font-weight: 600;
+    padding: 0.35rem 0.7rem;
+    border-radius: 6px;
+  }
+  .nav a:hover { background: var(--code-bg); color: var(--fg); }
+  .nav a.active { background: var(--accent-soft); color: var(--accent); }
+  .page { display: none; }
+  .page.active { display: block; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+  .card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 1.1rem 1.2rem;
+    display: flex;
+    flex-direction: column;
+  }
+  .card h3 { font-size: 1.08rem; margin: 0.4rem 0 0.5rem; }
+  .card p { font-size: 0.92em; color: var(--fg); margin: 0 0 0.75rem; }
+  .card .src { margin-top: auto; font-size: 0.8em; color: var(--muted); }
+  .card .src code { background: none; padding: 0; color: var(--muted); }
+  .card .pill { align-self: flex-start; text-transform: uppercase; letter-spacing: 0.04em; }
+  .pill.app { background: var(--accent-soft); color: var(--accent); }
+  .pill.net { background: var(--good-soft); color: var(--good); }
+  .pill.sec { background: var(--danger-soft); color: var(--danger); }
+  .pill.sys { background: var(--warn-soft); color: var(--warn); }
+  .pill.build { background: var(--code-bg); color: var(--muted); }
 </style>
 </head>
 <body>
+
+<nav class="nav">
+  <span class="brand">chdkpano</span>
+  <a href="#" data-page="explainer" class="active">Explainer</a>
+  <a href="#" data-page="features">Features</a>
+</nav>
+
+<div id="page-explainer" class="page active">
 
 <h1>chdkpano on NixOS</h1>
 <p class="subtitle">
@@ -699,6 +756,222 @@ sudo nix-collect-garbage -d --delete-older-than 14d</pre>
   Last updated by the scaffold script. Edit
   <code>nix/explainer.html</code> as the setup evolves.
 </p>
+
+</div><!-- /page-explainer -->
+
+<div id="page-features" class="page">
+
+<h1>What the Nix build installs</h1>
+<p class="subtitle">
+  Every major component the flake bakes into the Pi image (and the Mac that
+  builds it). Each card points at the file that defines it — see the
+  <a href="#" data-page="explainer">Explainer</a> for the full walkthrough.
+</p>
+
+<h2>The application</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill app">service</span>
+    <h3>chdkpano server</h3>
+    <p>The axum HTTP server (Rust → aarch64-linux) that drives the Canon rig,
+      run as a hardened <code>systemd</code> unit under its own
+      <code>chdkpano</code> user on port 3030.</p>
+    <div class="src"><code>pkgs/chdkpano.nix · modules/chdkpano.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill app">web ui</span>
+    <h3>Leptos wasm client</h3>
+    <p>The browser UI: a Rust → <code>wasm32</code> bundle built with trunk +
+      Tailwind, shipped as static files and served by the server at
+      <code>http://chdk-pi.local:3030</code>.</p>
+    <div class="src"><code>pkgs/chdkpano.nix (postBuild)</code></div>
+  </div>
+
+</div>
+
+<h2>Networking</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill net">access point</span>
+    <h3>hostapd</h3>
+    <p>Field mode: broadcasts the <code>chdkpano</code> WiFi AP on the USB
+      dongle (<code>wlan1</code>) with a static <code>.1</code> gateway IP so
+      phones can connect in the field.</p>
+    <div class="src"><code>modules/network-field.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill net">dhcp + dns</span>
+    <h3>dnsmasq</h3>
+    <p>Hands out DHCP leases to AP clients and resolves every hostname to the
+      Pi itself — the basis for captive-portal-style redirects in field mode.</p>
+    <div class="src"><code>modules/network-field.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill net">wifi client</span>
+    <h3>wpa_supplicant</h3>
+    <p>Joins known SSIDs (home / phone hotspot) on the built-in radio
+      (<code>wlan0</code>) — and both radios in desk mode. NetworkManager is
+      deliberately disabled to avoid fights.</p>
+    <div class="src"><code>modules/network-base.nix · -desk.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill net">mesh vpn</span>
+    <h3>Tailscale</h3>
+    <p>Declarative mesh VPN so you can ssh the Pi from anywhere with internet,
+      regardless of which WiFi it's currently on. Auth key provisioned at
+      first boot.</p>
+    <div class="src"><code>modules/network-base.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill net">mdns</span>
+    <h3>Avahi</h3>
+    <p>Publishes <code>chdk-pi.local</code> over mDNS on every interface, so
+      both the Mac and AP clients can reach the Pi by name without knowing its
+      IP.</p>
+    <div class="src"><code>modules/network-base.nix</code></div>
+  </div>
+
+</div>
+
+<h2>Access &amp; security</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill sec">ssh</span>
+    <h3>OpenSSH</h3>
+    <p>Keys-only sshd (no passwords, no root login). Bound to loopback/Tailscale
+      in field mode so strangers on the AP can't reach port 22; opened up on the
+      trusted LAN in desk mode.</p>
+    <div class="src"><code>modules/network-base.nix · -field.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill sec">usb access</span>
+    <h3>Canon udev rule</h3>
+    <p>Grants <code>0666</code> on Canon USB devices (vendor <code>04a9</code>)
+      so the server can open the camera via nusb without running as root.</p>
+    <div class="src"><code>modules/chdkpano.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill sec">firewall</span>
+    <h3>nftables firewall</h3>
+    <p>NixOS' default-deny firewall with a single hole punched for the
+      chdkpano port (3030). IP forwarding stays off in field mode to isolate AP
+      clients from your home LAN.</p>
+    <div class="src"><code>modules/chdkpano.nix · -field.nix</code></div>
+  </div>
+
+</div>
+
+<h2>System &amp; image</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill sys">atomic modes</span>
+    <h3>field / desk specialisations</h3>
+    <p>Two whole-system network configs sharing one kernel. Flip between AP
+      (field) and client (desk) modes live with
+      <code>switch-to-configuration</code> — no reboot.</p>
+    <div class="src"><code>flake.nix · modules/network-{field,desk}.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill sys">image</span>
+    <h3>aarch64 SD-card image</h3>
+    <p>A flashable, zstd-compressed NixOS image for the Pi Zero 2 W, with
+      redistributable firmware for the VC4 GPU and BCM WiFi/BT chip baked in.</p>
+    <div class="src"><code>flake.nix (sdImage) · hosts/chdk-pi.nix</code></div>
+  </div>
+
+</div>
+
+<h2>Build toolchain</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill build">rust</span>
+    <h3>Pinned Rust nightly</h3>
+    <p>A specific nightly toolchain (via rust-overlay) with the
+      <code>wasm32-unknown-unknown</code> target and <code>rust-src</code>, so
+      the leptos client builds reproducibly across machines.</p>
+    <div class="src"><code>pkgs/chdkpano.nix · flake.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill build">wasm pipeline</span>
+    <h3>trunk · wasm-bindgen · binaryen · node</h3>
+    <p>The toolchain trunk shells out to during an offline release build:
+      wasm-bindgen for JS glue, binaryen's <code>wasm-opt</code>, and Node for
+      Tailwind v4.</p>
+    <div class="src"><code>pkgs/chdkpano.nix (nativeBuildInputs)</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill build">vendored dep</span>
+    <h3>chdkptp_rs source</h3>
+    <p>The sibling <code>chdkptp_rs</code> repo, pulled in as a non-flake input
+      and stitched into the sandbox so the server's path dependency resolves
+      hermetically.</p>
+    <div class="src"><code>flake.nix (chdkptp-src) · pkgs/chdkpano.nix</code></div>
+  </div>
+
+</div>
+
+<h2>On the build Mac</h2>
+<div class="grid">
+
+  <div class="card">
+    <span class="pill build">cross-build vm</span>
+    <h3>nix-darwin linux-builder</h3>
+    <p>A small NixOS VM (4 cores / 6 GB) on the Mac via the macOS
+      Virtualization framework. Transparently offloads
+      <code>aarch64-linux</code> builds — image builds drop from ~30 min to
+      ~3–10 min.</p>
+    <div class="src"><code>darwin/builder.nix</code></div>
+  </div>
+
+  <div class="card">
+    <span class="pill build">dev tools</span>
+    <h3>Deploy &amp; dev tooling</h3>
+    <p>System packages on the Mac for working the fleet:
+      <code>nixos-rebuild</code>, <code>deploy-rs</code>,
+      <code>nix-output-monitor</code>, and the <code>alejandra</code>
+      formatter.</p>
+    <div class="src"><code>darwin/builder.nix · flake.nix (devShell)</code></div>
+  </div>
+
+</div>
+
+</div><!-- /page-features -->
+
+<script>
+  (function () {
+    var links = document.querySelectorAll('.nav a[data-page], a[data-page]');
+    function show(name) {
+      document.querySelectorAll('.page').forEach(function (p) {
+        p.classList.toggle('active', p.id === 'page-' + name);
+      });
+      document.querySelectorAll('.nav a[data-page]').forEach(function (a) {
+        a.classList.toggle('active', a.dataset.page === name);
+      });
+      window.scrollTo(0, 0);
+    }
+    links.forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        show(a.dataset.page);
+      });
+    });
+  })();
+</script>
 
 </body>
 </html>

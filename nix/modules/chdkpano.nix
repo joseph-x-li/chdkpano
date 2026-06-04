@@ -61,7 +61,9 @@ in
       group = cfg.user;
       # plugdev: nusb / udev convention for USB device access
       # dialout: in case we ever talk to a /dev/tty* CHDK USB-serial bridge
-      extraGroups = [ "plugdev" "dialout" ];
+      # wpa_supplicant: access the wpa_cli control socket for the /wifi page
+      #   (socket group is hardcoded to `wpa_supplicant` in current nixpkgs)
+      extraGroups = [ "plugdev" "dialout" "wpa_supplicant" ];
     };
     users.groups.${cfg.user} = { };
 
@@ -91,7 +93,22 @@ in
         CHDKPANO_STATIC_DIR = "${cfg.package}/share/chdkpano/dist";
         CHDKPANO_ADDR = "${cfg.addr}:${toString cfg.port}";
         RUST_LOG = "chdkpano_server=info,tower_http=info";
+
+        # Radio identity for the /wifi page. The server reads these to show
+        # the AP it broadcasts and to know which interface to reconfigure as
+        # the client. Sourced from the shared `networking.chdkpano` option
+        # set (defined in modules/network-base.nix).
+        CHDKPANO_AP_IFACE = config.networking.chdkpano.apInterface;
+        CHDKPANO_CLIENT_IFACE = config.networking.chdkpano.clientInterface;
+        CHDKPANO_AP_SSID = config.networking.chdkpano.apSsid;
+        CHDKPANO_AP_PASSWORD = config.networking.chdkpano.apPassword;
+        CHDKPANO_AP_SUBNET = config.networking.chdkpano.apSubnet;
       };
+
+      # `wpa_cli` (to reconfigure the client radio) and `iw` (to read live
+      # AP/client status) must be on the unit's PATH. The server shells out
+      # to them; if they're missing the /wifi page degrades to static data.
+      path = [ pkgs.wpa_supplicant pkgs.iw ];
 
       serviceConfig = {
         Type = "simple";
@@ -111,7 +128,8 @@ in
         NoNewPrivileges = true;
         # nusb needs /dev/bus/usb — grant it explicitly.
         DeviceAllow = [ "char-usb_device rw" "char-usbmon r" ];
-        SupplementaryGroups = [ "plugdev" ];
+        # plugdev: Canon USB access; wpa_supplicant: wpa_cli control socket
+        SupplementaryGroups = [ "plugdev" "wpa_supplicant" ];
       };
     };
 

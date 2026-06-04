@@ -2,6 +2,7 @@
 
 mod ui_button;
 mod ui_collapsible;
+mod ui_dialog;
 
 use leptos::prelude::*;
 use leptos::ev;
@@ -12,9 +13,15 @@ use leptos_router::params::Params;
 use leptos_router::path;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use ui_button::{Button, ButtonVariant};
 use ui_collapsible::{Collapsible, CollapsibleContent, CollapsibleTrigger};
+use ui_dialog::{
+    Dialog, DialogBody, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader,
+    DialogTitle, DialogTrigger,
+};
 
 fn event_target_value(ev: &ev::Event) -> String {
     use wasm_bindgen::JsCast;
@@ -22,6 +29,14 @@ fn event_target_value(ev: &ev::Event) -> String {
     let input: web_sys::HtmlTextAreaElement = target
         .dyn_into()
         .expect("input/textarea");
+    input.value()
+}
+
+/// Like `event_target_value` but for `<input>` elements (the WiFi form).
+fn input_value(ev: &ev::Event) -> String {
+    use wasm_bindgen::JsCast;
+    let target = ev.target().expect("event target");
+    let input: web_sys::HtmlInputElement = target.unchecked_into();
     input.value()
 }
 
@@ -36,22 +51,42 @@ struct CameraDto {
     product: Option<String>,
 }
 
+/// The four cameras of the panorama rig, indexed so that camera N lives at
+/// `RIG_SERIALS[N - 1]` (the rig labels cameras 1–4). These are fixed
+/// hardware — edit this list to match the rig's actual USB serials. They
+/// must be the *full* serial string: `/api/viewport/<serial>` matches
+/// exactly (see registry.rs `get_or_open`).
+const RIG_SERIALS: [&str; 4] = [
+    "DUMMY_SERIAL_CAM1", // placeholder — not connected today
+    "FA934BBFD3514EF19CA0B81E72A213F7", // camera 2
+    "D8359439FEB74E79899654E98FD41CA1", // camera 3
+    "524EE2E7D9E34C6194BB238558A9EF91", // camera 4
+];
+
 #[component]
 fn App() -> impl IntoView {
     view! {
         <Router>
             <header class="bg-card border-b border-border px-6 py-4 flex items-baseline gap-6">
-                <h1 class="text-lg font-semibold tracking-tight">"chdkpano"</h1>
+                <h1 class="text-lg font-semibold tracking-tight flex items-center gap-2">
+                    <img src="/favicon.png" alt="📸" class="w-5 h-5"/>
+                    "chdkpano"
+                </h1>
                 <nav class="flex gap-4">
                     <A href="/" attr:class="text-sm text-muted-foreground hover:text-foreground">"Cameras"</A>
-                // Plain <a> (not Leptos <A>) so the router doesn't intercept —
-                // /swagger-ui/ is served by the backend, not the WASM SPA.
-                <a href="/swagger-ui/" class="text-sm text-muted-foreground hover:text-foreground">"API"</a>
+                    <A href="/pano" attr:class="text-sm text-muted-foreground hover:text-foreground">"Rig"</A>
+                    <A href="/wifi" attr:class="text-sm text-muted-foreground hover:text-foreground">"WiFi"</A>
+                // In-app route that embeds the backend Swagger UI in an iframe,
+                // keeping this nav bar (vs. /swagger-ui/ which replaces the page).
+                <A href="/api" attr:class="text-sm text-muted-foreground hover:text-foreground">"API"</A>
                 </nav>
             </header>
             <main class="max-w-6xl mx-auto px-6 py-6">
                 <Routes fallback=|| "Not found">
                     <Route path=path!("/") view=CameraListPage/>
+                    <Route path=path!("/pano") view=PanoPage/>
+                    <Route path=path!("/wifi") view=WifiPage/>
+                    <Route path=path!("/api") view=ApiDocsPage/>
                     <Route path=path!("/camera/:serial") view=CameraDetailPage/>
                 </Routes>
             </main>
@@ -328,6 +363,800 @@ fn image_format_name(code: u16) -> Option<&'static str> {
         0xBF01 => "MPO (3D)",
         _ => return None,
     })
+}
+
+// ─── Pano rig page ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanoTab {
+    Viewfinder,
+}
+
+impl PanoTab {
+    const ALL: &'static [(Self, &'static str)] = &[(Self::Viewfinder, "Viewfinder")];
+}
+
+#[component]
+fn PanoPage() -> impl IntoView {
+    let (tab, set_tab) = signal(PanoTab::Viewfinder);
+
+    view! {
+        <h2 class="text-base font-semibold mb-1">"Camera Rig"</h2>
+        <p class="text-sm text-muted-foreground mb-4">
+            "The four fixed cameras of the panorama rig, by physical slot."
+        </p>
+
+        // ─── Tab strip ─────────────────────────────────────────────────
+        <div class="border-b border-border mb-5 flex gap-0.5 -mx-6 px-6 overflow-x-auto">
+            {PanoTab::ALL.iter().map(|(t, label)| {
+                let t = *t;
+                view! {
+                    <button
+                        class=move || {
+                            let active = tab.get() == t;
+                            format!(
+                                "px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap cursor-pointer {}",
+                                if active {
+                                    "border-foreground text-foreground"
+                                } else {
+                                    "border-transparent text-muted-foreground hover:text-foreground"
+                                },
+                            )
+                        }
+                        on:click=move |_| set_tab.set(t)
+                    >{*label}</button>
+                }
+            }).collect_view()}
+        </div>
+
+        // ─── Tab content ───────────────────────────────────────────────
+        {move || match tab.get() {
+            PanoTab::Viewfinder => view! { <PanoViewfinder/> }.into_any(),
+        }}
+    }
+}
+
+/// One row of four live viewports. Each `RigCamera` self-paces its own poll
+/// loop, so the cameras decorrelate naturally and never overlap requests.
+#[component]
+fn PanoViewfinder() -> impl IntoView {
+    view! {
+        <div class="grid grid-cols-4 gap-2">
+            {RIG_SERIALS.iter().enumerate().map(|(idx, serial)| {
+                view! { <RigCamera idx=idx serial=serial.to_string()/> }
+            }).collect_view()}
+        </div>
+        <PanoShootButton/>
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ClockSyncSlotDto {
+    idx: usize,
+    serial: Option<String>,
+    status: String,
+    offset_ms: Option<f64>,
+    offset_rtt_ms: Option<f64>,
+    target_tick: Option<i64>,
+    busy_wait_ms: Option<i64>,
+    actual_exit_host_ms: Option<f64>,
+    overshoot_ms: Option<f64>,
+    fired: Option<bool>,
+    image_path: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ClockSyncReportDto {
+    slots: Vec<ClockSyncSlotDto>,
+    inter_camera_skew_ms: Option<f64>,
+    target_host_ms: f64,
+    lead_ms: f64,
+    samples: usize,
+    elapsed_ms: u64,
+}
+
+async fn post_clocksync(flash: bool) -> Result<ClockSyncReportDto, String> {
+    let resp = gloo_net::http::Request::post(&format!("/api/pano/shoot_clocksync?flash={flash}"))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    resp.json::<ClockSyncReportDto>()
+        .await
+        .map_err(|e| format!("decode: {e}"))
+}
+
+/// "Shoot all (clock-synced)" — fires the sophisticated multi-camera shoot
+/// and renders the per-camera skew diagnostics it returns.
+#[component]
+fn PanoShootButton() -> impl IntoView {
+    let (pending, set_pending) = signal(false);
+    let (flash, set_flash) = signal(false);
+    // Bumped each shoot so the "latest capture" <img> URLs change and refetch.
+    let (seq, set_seq) = signal(0u64);
+    let (report, set_report) = signal::<Option<Result<ClockSyncReportDto, String>>>(None);
+
+    let shoot = move |_| {
+        let flash_on = flash.get();
+        set_pending.set(true);
+        set_report.set(None);
+        set_seq.update(|n| *n = n.wrapping_add(1));
+        wasm_bindgen_futures::spawn_local(async move {
+            let res = post_clocksync(flash_on).await;
+            set_report.set(Some(res));
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <div class="mt-6 border-t border-border pt-4">
+            <div class="flex items-center gap-3">
+                <Button variant=ButtonVariant::Default on:click=shoot attr:disabled=move || pending.get()>
+                    {move || if pending.get() { "Shooting… (~3 s)" } else { "Shoot all (clock-synced)" }}
+                </Button>
+                <label class="flex items-center gap-1.5 text-sm cursor-pointer select-none">
+                    <input
+                        type="checkbox"
+                        class="accent-foreground cursor-pointer"
+                        prop:checked=move || flash.get()
+                        on:change=move |_| set_flash.update(|v| *v = !*v)
+                    />
+                    "Flash"
+                </label>
+                <span class="text-xs text-muted-foreground">
+                    "Calibrates each camera's clock, then fires them on a shared deadline. "
+                    "Cameras must be in record mode (the viewfinder above keeps them there)."
+                </span>
+            </div>
+            {move || match report.get() {
+                None => ().into_any(),
+                Some(Err(e)) => view! {
+                    <p class="text-sm text-destructive mt-3">{format!("Shoot failed: {e}")}</p>
+                }.into_any(),
+                Some(Ok(r)) => render_clocksync_report(r, seq.get()).into_any(),
+            }}
+        </div>
+    }
+}
+
+fn render_clocksync_report(r: ClockSyncReportDto, bust: u64) -> impl IntoView {
+    let skew = r.inter_camera_skew_ms
+        .map(|s| format!("{s:.1} ms"))
+        .unwrap_or_else(|| "—".into());
+    let fired_n = r.slots.iter().filter(|s| s.fired == Some(true)).count();
+    let active_n = r.slots.iter().filter(|s| s.status != "empty").count();
+
+    // One gallery cell per slot. Cameras that fired show a thumbnail of the
+    // file they wrote (path comes natively from the shoot: get_image_dir +
+    // exp_count, no FS scan); the rest show a blank placeholder so the row
+    // stays aligned with the four viewfinders above.
+    let gallery: Vec<(usize, Option<(String, String)>)> = r.slots.iter()
+        .map(|s| {
+            let img = match (s.status.as_str(), &s.serial, &s.image_path) {
+                ("fired", Some(ser), Some(p)) => Some((ser.clone(), p.clone())),
+                _ => None,
+            };
+            (s.idx, img)
+        })
+        .collect();
+
+    let rows = r.slots.into_iter().filter(|s| s.status != "empty").map(|s| {
+        let opt_f = |o: Option<f64>| o.map(|v| format!("{v:.1}")).unwrap_or_else(|| "—".into());
+        let opt_i = |o: Option<i64>| o.map(|v| v.to_string()).unwrap_or_else(|| "—".into());
+        let (badge_cls, badge) = match s.status.as_str() {
+            "fired" => ("text-green-500", "✓ fired"),
+            "missed" => ("text-amber-500", "missed"),
+            _ => ("text-destructive", "error"),
+        };
+        view! {
+            <tr class="border-t border-border">
+                <td class="px-3 py-1.5 font-medium">{format!("camera {}", s.idx + 1)}</td>
+                <td class=format!("px-3 py-1.5 font-medium {badge_cls}")>{badge}</td>
+                <td class="px-3 py-1.5 font-mono tabular-nums">{opt_f(s.offset_ms)}</td>
+                <td class="px-3 py-1.5 font-mono tabular-nums">{opt_f(s.offset_rtt_ms)}</td>
+                <td class="px-3 py-1.5 font-mono tabular-nums">{opt_i(s.busy_wait_ms)}</td>
+                <td class="px-3 py-1.5 font-mono tabular-nums">{opt_f(s.overshoot_ms)}</td>
+                <td class="px-3 py-1.5 text-destructive text-xs">{s.error.unwrap_or_default()}</td>
+            </tr>
+        }
+    }).collect_view();
+
+    view! {
+        <div class="mt-3">
+            <div class="flex flex-wrap items-baseline gap-x-6 gap-y-1 mb-2 text-sm">
+                <span>
+                    "Inter-camera skew: "
+                    <span class="font-mono font-semibold">{skew}</span>
+                </span>
+                <span class="text-muted-foreground">
+                    {format!("{fired_n}/{active_n} fired · lead {:.0} ms · {} samples · {} ms total",
+                        r.lead_ms, r.samples, r.elapsed_ms)}
+                </span>
+            </div>
+            <div class="border border-border rounded-md bg-card overflow-hidden">
+                <table class="w-full text-sm">
+                    <thead class="bg-muted text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                            <th class="text-left font-medium px-3 py-2">"camera"</th>
+                            <th class="text-left font-medium px-3 py-2">"status"</th>
+                            <th class="text-left font-medium px-3 py-2">"offset ms"</th>
+                            <th class="text-left font-medium px-3 py-2">"rtt ms"</th>
+                            <th class="text-left font-medium px-3 py-2">"busy-wait ms"</th>
+                            <th class="text-left font-medium px-3 py-2">"overshoot ms"</th>
+                            <th class="text-left font-medium px-3 py-2">"error"</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows}</tbody>
+                </table>
+            </div>
+            <div class="mt-4">
+                <h4 class="text-sm font-medium mb-2">"Latest captures"</h4>
+                <div class="grid grid-cols-4 gap-2">
+                    {gallery.into_iter().map(|(idx, img)| {
+                        // Unlike the raw viewfinder frames, the captured stills are
+                        // full-res, square-pixel, and carry an EXIF orientation tag
+                        // (the camera's sensor noticed the physical rotation) — so
+                        // the browser shows them upright; just contain them.
+                        let (inner, open_link) = match img {
+                            Some((ser, path)) => {
+                                let url = format!("/api/file/{}?path={}", ser, urlencode(&path));
+                                let img_view = view! {
+                                    <img
+                                        class="max-w-full max-h-full object-contain"
+                                        src=format!("{url}&t={bust}")
+                                        alt=format!("camera {} latest capture", idx + 1)
+                                    />
+                                }.into_any();
+                                let link = view! {
+                                    <a
+                                        href=url
+                                        target="_blank"
+                                        rel="noopener"
+                                        class="text-[10px] text-muted-foreground hover:text-foreground underline"
+                                    >"open ↗"</a>
+                                }.into_any();
+                                (img_view, link)
+                            }
+                            None => (
+                                view! { <span class="text-xs text-muted-foreground">"no capture"</span> }.into_any(),
+                                ().into_any(),
+                            ),
+                        };
+                        view! {
+                            <div class="bg-black rounded-lg overflow-hidden">
+                                <div class="px-2 py-1 bg-card/80 text-xs font-medium flex items-center justify-between gap-2">
+                                    <span>{format!("camera {}", idx + 1)}</span>
+                                    {open_link}
+                                </div>
+                                <div class="relative w-full aspect-[3/4] overflow-hidden flex items-center justify-center">
+                                    {inner}
+                                </div>
+                            </div>
+                        }
+                    }).collect_view()}
+                </div>
+            </div>
+        </div>
+    }
+}
+
+/// Delay between a completed frame and the next request. Keeps a healthy
+/// camera smooth without busy-looping the USB bus.
+const RIG_FRAME_GAP_MS: u32 = 120;
+
+/// A single rig cell: persistent last-frame `<img>` + a self-terminating
+/// fetch loop. On success it swaps in a fresh object-URL (revoking the old
+/// one); on failure it leaves the last frame up and bumps an error counter.
+#[component]
+fn RigCamera(idx: usize, serial: String) -> impl IntoView {
+    let serial_short: String = serial.chars().take(12).collect();
+
+    // Currently-displayed object URL (last good frame), and the count of
+    // consecutive failed fetches since the last success.
+    let frame_url = RwSignal::new(Option::<String>::None);
+    let err_count = RwSignal::new(0u32);
+
+    // `alive` is flipped by on_cleanup when the cell unmounts; the loop polls
+    // it to self-terminate. Arc<AtomicBool> because on_cleanup callbacks must
+    // be Send. The object-URL bookkeeping lives entirely inside the one async
+    // task as a plain local, so no shared interior-mutability is needed.
+    let alive = Arc::new(AtomicBool::new(true));
+
+    wasm_bindgen_futures::spawn_local({
+        let serial = serial.clone();
+        let alive = alive.clone();
+        async move {
+            let mut current: Option<String> = None;
+            loop {
+                if !alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                let fetched = fetch_viewport_jpeg_bytes(&serial).await;
+                if !alive.load(Ordering::Relaxed) {
+                    break;
+                }
+                match fetched.and_then(|b| bytes_to_object_url(&b)) {
+                    Ok(new_url) => {
+                        // Revoke the prior frame's URL — it's already painted,
+                        // so freeing the mapping doesn't disturb the display —
+                        // then swap the new frame in.
+                        if let Some(old) = current.replace(new_url.clone()) {
+                            revoke_object_url(&old);
+                        }
+                        frame_url.set(Some(new_url));
+                        err_count.set(0);
+                    }
+                    Err(()) => err_count.update(|c| *c += 1),
+                }
+                gloo_timers::future::TimeoutFuture::new(RIG_FRAME_GAP_MS).await;
+            }
+            // Final revoke so we don't leak the last frame on teardown.
+            if let Some(old) = current.take() {
+                revoke_object_url(&old);
+            }
+        }
+    });
+
+    on_cleanup(move || alive.store(false, Ordering::Relaxed));
+
+    // Per-camera mode switching (record extends the lens + runs the viewfinder
+    // pipeline; play retracts it). Mirrors the single-camera Viewport tab.
+    let (mode_pending, set_mode_pending) = signal(false);
+    let (mode_status, set_mode_status) = signal::<Option<String>>(None);
+    let switch_mode = {
+        let serial = serial.clone();
+        move |which: &'static str| {
+            let serial = serial.clone();
+            set_mode_pending.set(true);
+            set_mode_status.set(None);
+            wasm_bindgen_futures::spawn_local(async move {
+                let url = format!("/api/mode/{which}/{serial}");
+                let res = gloo_net::http::Request::post(&url)
+                    .send()
+                    .await
+                    .map_err(|e| format!("network: {e}"))
+                    .and_then(|r| if r.ok() { Ok(r) } else { Err(format!("HTTP {}", r.status())) });
+                match res {
+                    Ok(r) => match r.json::<serde_json::Value>().await {
+                        Ok(v) => {
+                            let m = v.get("mode").and_then(|m| m.as_str()).unwrap_or("?").to_string();
+                            set_mode_status.set(Some(m));
+                        }
+                        Err(e) => set_mode_status.set(Some(format!("decode: {e}"))),
+                    },
+                    Err(e) => set_mode_status.set(Some(format!("err: {e}"))),
+                }
+                set_mode_pending.set(false);
+            });
+        }
+    };
+    let on_record = {
+        let switch_mode = switch_mode.clone();
+        move |_| switch_mode("record")
+    };
+    let on_play = move |_| switch_mode("play");
+
+    view! {
+        <div class="bg-black rounded-lg overflow-hidden flex flex-col">
+            <div class="flex items-center justify-between px-2 py-1 bg-card/80 text-xs">
+                <span class="font-medium">{format!("camera {}", idx + 1)}</span>
+                <span class="font-mono text-muted-foreground">{serial_short} "…"</span>
+            </div>
+            <div class="relative w-full aspect-[3/4] overflow-hidden bg-black">
+                {move || match frame_url.get() {
+                    Some(url) => view! {
+                        // The live buffer is an anamorphic 720×240 (non-square
+                        // pixels the camera intends to display at 4:3), and the
+                        // cameras are physically mounted rotated 90°. So: size the
+                        // image to a 4:3 landscape box and `object-fit:fill` to
+                        // stretch the 720×240 to true proportions, *then* rotate
+                        // CCW into a 3:4 portrait that exactly fills the cell.
+                        // Percentages keep it responsive — width 133.33% = cell
+                        // height, height 75% = cell width, so the rotated 4:3 box
+                        // covers the 3:4 cell with no letterboxing.
+                        <img
+                            class="absolute left-1/2 top-1/2"
+                            style="width:133.3333%;height:75%;object-fit:fill;transform:translate(-50%,-50%) rotate(-90deg)"
+                            src=url
+                            alt=format!("rig camera {} viewport", idx + 1)
+                        />
+                    }.into_any(),
+                    None => view! {
+                        <div class="absolute inset-0 flex items-center justify-center">
+                            <span class="text-xs text-muted-foreground">"waiting for first frame…"</span>
+                        </div>
+                    }.into_any(),
+                }}
+                // Consecutive-failure badge. Hidden while healthy.
+                {move || {
+                    let n = err_count.get();
+                    if n == 0 {
+                        ().into_any()
+                    } else if frame_url.with(|f| f.is_some()) {
+                        view! {
+                            <span class="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-destructive/80 text-white text-[10px] font-mono z-10">
+                                {format!("⚠ {n} stale")}
+                            </span>
+                        }.into_any()
+                    } else {
+                        view! {
+                            <div class="absolute inset-0 flex items-center justify-center">
+                                <span class="px-2 py-1 rounded bg-destructive/80 text-white text-xs font-mono">
+                                    {format!("⚠ no signal — {n} failed")}
+                                </span>
+                            </div>
+                        }.into_any()
+                    }
+                }}
+            </div>
+            // ─── Per-camera mode controls ──────────────────────────────
+            <div class="flex items-center gap-1 px-2 py-1.5 bg-card/80 border-t border-border">
+                <Button variant=ButtonVariant::Default size=ui_button::ButtonSize::Sm
+                    on:click=on_record attr:disabled=move || mode_pending.get()>
+                    "Record"
+                </Button>
+                <Button variant=ButtonVariant::Outline size=ui_button::ButtonSize::Sm
+                    on:click=on_play attr:disabled=move || mode_pending.get()>
+                    "Play"
+                </Button>
+                <span class="text-[10px] text-muted-foreground ml-auto truncate">
+                    {move || {
+                        if mode_pending.get() {
+                            "switching…".to_string()
+                        } else {
+                            mode_status.get().map(|m| format!("→ {m}")).unwrap_or_default()
+                        }
+                    }}
+                </span>
+            </div>
+        </div>
+    }
+}
+
+/// Fetch one viewport frame. Returns the JPEG bytes only on a genuine
+/// `image/jpeg` 200; the server's SVG-placeholder responses (camera asleep,
+/// in play mode, errored) are treated as failures so the caller can keep the
+/// last good frame instead of flashing a placeholder.
+async fn fetch_viewport_jpeg_bytes(serial: &str) -> Result<Vec<u8>, ()> {
+    let url = format!("/api/viewport/{serial}");
+    let resp = gloo_net::http::Request::get(&url)
+        .send()
+        .await
+        .map_err(|_| ())?;
+    if !resp.ok() {
+        return Err(());
+    }
+    let ct = resp.headers().get("content-type").unwrap_or_default();
+    if !ct.contains("jpeg") {
+        return Err(());
+    }
+    resp.binary().await.map_err(|_| ())
+}
+
+/// Wrap JPEG bytes in a Blob and mint an object URL the `<img>` can render.
+fn bytes_to_object_url(bytes: &[u8]) -> Result<String, ()> {
+    use wasm_bindgen::JsValue;
+    let arr = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
+    arr.copy_from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&JsValue::from(arr));
+    let blob = web_sys::Blob::new_with_u8_array_sequence(&JsValue::from(parts)).map_err(|_| ())?;
+    web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| ())
+}
+
+fn revoke_object_url(url: &str) {
+    let _ = web_sys::Url::revoke_object_url(url);
+}
+
+// ─── WiFi page ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct ApInfoDto {
+    iface: String,
+    ssid: String,
+    password: String,
+    ip: Option<String>,
+    channel: Option<u32>,
+    connected_clients: Option<usize>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct WifiClientDto {
+    iface: String,
+    ssid: Option<String>,
+    state: Option<String>,
+    ip: Option<String>,
+    signal_dbm: Option<i32>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct WifiStatusDto {
+    ap: ApInfoDto,
+    client: WifiClientDto,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+struct SetClientResultDto {
+    ok: bool,
+    message: String,
+    network_id: Option<i32>,
+    client: WifiClientDto,
+}
+
+async fn fetch_wifi() -> Result<WifiStatusDto, String> {
+    let response = gloo_net::http::Request::get("/api/wifi")
+        .send()
+        .await
+        .map_err(|e| format!("fetch: {e}"))?;
+    if !response.ok() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    response
+        .json::<WifiStatusDto>()
+        .await
+        .map_err(|e| format!("decode: {e}"))
+}
+
+async fn post_set_client(ssid: String, psk: String) -> Result<SetClientResultDto, String> {
+    let body = serde_json::json!({ "ssid": ssid, "psk": psk });
+    let resp = gloo_net::http::Request::post("/api/wifi/client")
+        .header("content-type", "application/json")
+        .body(body.to_string())
+        .map_err(|e| format!("build: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    if !resp.ok() {
+        // The server returns { "error": "..." } on failure (HTTP 500).
+        let txt = resp.text().await.unwrap_or_default();
+        let msg = serde_json::from_str::<serde_json::Value>(&txt)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or(txt);
+        return Err(format!("HTTP {} — {msg}", resp.status()));
+    }
+    resp.json::<SetClientResultDto>()
+        .await
+        .map_err(|e| format!("decode: {e}"))
+}
+
+#[component]
+fn WifiPage() -> impl IntoView {
+    let status = LocalResource::new(fetch_wifi);
+
+    view! {
+        <div class="flex items-baseline justify-between mb-4 gap-3">
+            <h2 class="text-base font-semibold">"WiFi"</h2>
+            <Button
+                variant=ButtonVariant::Outline
+                size=ui_button::ButtonSize::Sm
+                on:click=move |_| { status.refetch(); }
+            >
+                "Refresh"
+            </Button>
+        </div>
+        <Suspense fallback=|| view! { <p class="text-sm text-muted-foreground">"Loading…"</p> }>
+            {move || Suspend::new(async move {
+                match status.await {
+                    Err(e) => view! {
+                        <p class="text-sm text-destructive">{format!("Error: {e}")}</p>
+                    }.into_any(),
+                    Ok(s) => view! {
+                        <div class="divide-y divide-border border-t border-border">
+                            <ApCard ap=s.ap/>
+                            <ClientCard client=s.client status=status/>
+                        </div>
+                    }.into_any(),
+                }
+            })}
+        </Suspense>
+    }
+}
+
+#[component]
+fn ApiDocsPage() -> impl IntoView {
+    view! {
+        <div class="flex items-baseline justify-between mb-4 gap-3">
+            <h2 class="text-base font-semibold">"API"</h2>
+            // Escape hatch to the standalone UI (full width, own tab).
+            <a
+                href="/swagger-ui/"
+                rel="external"
+                target="_blank"
+                class="text-sm text-muted-foreground hover:text-foreground"
+            >"Open full page ↗"</a>
+        </div>
+        // Swagger UI is a separate backend-served app; embedding it in an iframe
+        // is the clean way to keep our nav bar above it. Height fills the
+        // viewport below the header so it doesn't need its own outer scrollbar.
+        <iframe
+            src="/swagger-ui/"
+            title="Swagger UI"
+            class="w-full h-[calc(100vh-9rem)] border border-border rounded-md bg-white"
+        ></iframe>
+    }
+}
+
+#[component]
+fn ApCard(ap: ApInfoDto) -> impl IntoView {
+    let opt = |o: Option<String>| o.unwrap_or_else(|| "—".into());
+    view! {
+        <section class="py-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold">"Access point"</h3>
+                <span class="font-mono text-xs text-muted-foreground">{ap.iface.clone()}</span>
+            </div>
+            <p class="text-xs text-muted-foreground mb-3">
+                "The network the rig broadcasts in the field — connect your phone or laptop to this to reach the UI."
+            </p>
+            <dl class="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-4 text-sm">
+                <WifiField label="SSID" value=ap.ssid.clone() mono=true/>
+                <WifiField label="Password" value=ap.password.clone() mono=true/>
+                <WifiField label="Gateway IP" value=opt(ap.ip.clone()) mono=true/>
+                <WifiField label="Channel" value=ap.channel.map(|c| c.to_string()).unwrap_or_else(|| "—".into()) mono=true/>
+                <WifiField
+                    label="Connected clients"
+                    value=ap.connected_clients.map(|n| n.to_string()).unwrap_or_else(|| "—".into())
+                    mono=true
+                />
+            </dl>
+            {ap.note.map(|n| view! {
+                <p class="text-xs text-muted-foreground mt-3 italic">{format!("note: {n}")}</p>
+            })}
+        </section>
+    }
+}
+
+#[component]
+fn ClientCard(
+    client: WifiClientDto,
+    status: LocalResource<Result<WifiStatusDto, String>>,
+) -> impl IntoView {
+    let connected = client.ssid.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+    let ssid = client.ssid.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| "(not associated)".into());
+    view! {
+        <section class="py-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold">"Client radio"</h3>
+                <span class="font-mono text-xs text-muted-foreground">{client.iface.clone()}</span>
+            </div>
+            <p class="text-xs text-muted-foreground mb-3">
+                "Joins an existing network (home WiFi, a phone hotspot). Use the Join button below to point it at one."
+            </p>
+            <dl class="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-4 text-sm">
+                <div>
+                    <dt class="text-xs text-muted-foreground uppercase tracking-wide">"Joined network"</dt>
+                    <dd class=move || if connected { "font-mono text-xs break-all" } else { "font-mono text-xs break-all text-muted-foreground" }>
+                        {ssid}
+                    </dd>
+                </div>
+                <WifiField label="State" value=client.state.clone().unwrap_or_else(|| "—".into()) mono=true/>
+                <WifiField label="IP" value=client.ip.clone().unwrap_or_else(|| "—".into()) mono=true/>
+                <WifiField
+                    label="Signal"
+                    value=client.signal_dbm.map(|s| format!("{s} dBm")).unwrap_or_else(|| "—".into())
+                    mono=true
+                />
+            </dl>
+            {client.note.map(|n| view! {
+                <p class="text-xs text-muted-foreground mt-3 italic">{format!("note: {n}")}</p>
+            })}
+            <div class="mt-4">
+                <WifiJoinDialog status=status/>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn WifiField(label: &'static str, value: String, mono: bool) -> impl IntoView {
+    let value_cls = if mono { "font-mono text-xs break-all" } else { "text-sm" };
+    view! {
+        <div>
+            <dt class="text-xs text-muted-foreground uppercase tracking-wide">{label}</dt>
+            <dd class=value_cls>{if value.is_empty() { "—".to_string() } else { value }}</dd>
+        </div>
+    }
+}
+
+#[component]
+fn WifiJoinDialog(status: LocalResource<Result<WifiStatusDto, String>>) -> impl IntoView {
+    let (ssid, set_ssid) = signal(String::new());
+    let (psk, set_psk) = signal(String::new());
+    let (show_psk, set_show_psk) = signal(false);
+    let (pending, set_pending) = signal(false);
+    let (result, set_result) = signal::<Option<Result<String, String>>>(None);
+
+    let submit = move |_| {
+        let ssid_v = ssid.get().trim().to_string();
+        if ssid_v.is_empty() {
+            set_result.set(Some(Err("SSID is required".into())));
+            return;
+        }
+        let psk_v = psk.get();
+        set_pending.set(true);
+        set_result.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            match post_set_client(ssid_v, psk_v).await {
+                Ok(r) => {
+                    set_result.set(Some(Ok(r.message)));
+                    // Pull fresh radio status into the cards behind the dialog.
+                    status.refetch();
+                }
+                Err(e) => set_result.set(Some(Err(e))),
+            }
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <Dialog>
+            <DialogTrigger variant=ButtonVariant::Default size=ui_button::ButtonSize::Sm>
+                "Join a network"
+            </DialogTrigger>
+            <DialogContent class="max-w-md text-left">
+                <DialogHeader>
+                    <DialogTitle>"Join a network"</DialogTitle>
+                    <DialogDescription>
+                        "Applied live via wpa_supplicant. Takes effect immediately but does "
+                        "not survive a NixOS rebuild — add it to the flake to make it permanent."
+                    </DialogDescription>
+                </DialogHeader>
+
+                <DialogBody class="mt-4">
+                    <div>
+                        <label class="block text-xs text-muted-foreground uppercase tracking-wide mb-1">"SSID"</label>
+                        <input
+                            class="w-full text-sm bg-background border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring"
+                            prop:value=move || ssid.get()
+                            on:input=move |ev| set_ssid.set(input_value(&ev))
+                            placeholder="network name"
+                        />
+                    </div>
+
+                    <div>
+                        <label class="block text-xs text-muted-foreground uppercase tracking-wide mb-1">"Password"</label>
+                        <input
+                            class="w-full text-sm bg-background border border-border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-ring"
+                            type=move || if show_psk.get() { "text" } else { "password" }
+                            prop:value=move || psk.get()
+                            on:input=move |ev| set_psk.set(input_value(&ev))
+                            placeholder="8–63 chars, leave blank for an open network"
+                        />
+                        <label class="flex items-center gap-1.5 text-xs text-muted-foreground mt-1.5 cursor-pointer select-none">
+                            <input
+                                type="checkbox"
+                                class="accent-foreground cursor-pointer"
+                                prop:checked=move || show_psk.get()
+                                on:change=move |_| set_show_psk.update(|v| *v = !*v)
+                            />
+                            "Show password"
+                        </label>
+                    </div>
+
+                    {move || match result.get() {
+                        None => ().into_any(),
+                        Some(Ok(msg)) => view! { <p class="text-sm text-green-500">{msg}</p> }.into_any(),
+                        Some(Err(e)) => view! { <p class="text-sm text-destructive">{e}</p> }.into_any(),
+                    }}
+                </DialogBody>
+
+                <DialogFooter class="mt-6">
+                    <DialogClose variant=ButtonVariant::Outline size=ui_button::ButtonSize::Default>
+                        "Cancel"
+                    </DialogClose>
+                    <Button variant=ButtonVariant::Default on:click=submit attr:disabled=move || pending.get()>
+                        {move || if pending.get() { "Connecting…" } else { "Connect" }}
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    }
 }
 
 #[component]

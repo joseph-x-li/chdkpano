@@ -101,6 +101,22 @@
     networking.networkmanager.enable = false;
 
     ###############################################################
+    # Let the chdkpano service reconfigure the client radio
+    ###############################################################
+    # The /wifi page applies client-network changes at runtime by shelling
+    # out to `wpa_cli`. `userControlled = true` makes wpa_supplicant expose a
+    # group-accessible control socket (and sets update_config).
+    #
+    # NOTE: current nixpkgs fixes the control-socket group to `wpa_supplicant`
+    # (the old `userControlled.group` option was removed and now warns). So we
+    # grant access by adding the chdkpano service user to the `wpa_supplicant`
+    # group in modules/chdkpano.nix — NOT by re-scoping the socket here.
+    #
+    # Runtime-only: changes do not persist a rebuild unless also declared in
+    # `networking.wireless.networks`.
+    networking.wireless.userControlled = true;
+
+    ###############################################################
     # Firewall — accept loopback + tailscale + ssh + chdkpano
     # (specific WiFi-mode-dependent rules live in field/desk modules)
     ###############################################################

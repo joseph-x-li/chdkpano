@@ -7,7 +7,7 @@
 
 use utoipa::OpenApi;
 
-use crate::routes::{cameras, exec, files, live_state, pano, viewport};
+use crate::routes::{cameras, exec, files, live_state, pano, viewport, wifi};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -22,6 +22,7 @@ use crate::routes::{cameras, exec, files, live_state, pano, viewport};
         (name = "lua",      description = "Arbitrary on-camera Lua execution"),
         (name = "files",    description = "SD-card file browser and downloads"),
         (name = "pano",     description = "Four-camera panorama rig: slots, sync shoot, viewport grid"),
+        (name = "wifi",     description = "Radio status (AP + client) and client-network reconfigure"),
     ),
     paths(
         cameras::list_cameras,
@@ -36,9 +37,10 @@ use crate::routes::{cameras, exec, files, live_state, pano, viewport};
         pano::get_state,
         pano::assign_slot,
         pano::autofill,
-        pano::shoot,
-        pano::shoot_synced,
+        pano::shoot_clocksync,
         pano::viewport_slot,
+        wifi::wifi_status,
+        wifi::set_client,
     ),
     components(schemas(
         cameras::CameraDto,
@@ -54,8 +56,13 @@ use crate::routes::{cameras, exec, files, live_state, pano, viewport};
         pano::SlotDto,
         pano::StateDto,
         pano::AssignBody,
-        pano::ShootResultDto,
-        pano::ShootResponse,
+        pano::ClockSyncSlotDto,
+        pano::ClockSyncReportDto,
+        wifi::ApInfoDto,
+        wifi::ClientInfoDto,
+        wifi::WifiStatusDto,
+        wifi::SetClientBody,
+        wifi::SetClientResultDto,
     )),
 )]
 pub struct ApiDoc;
