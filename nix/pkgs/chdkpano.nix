@@ -28,7 +28,9 @@
 , wasm-bindgen-cli
 , binaryen
 , nodejs
+, tailwindcss_4
 , runCommand
+, fetchurl
 , makeWrapper
 , repoRoot      # the chdkpano Rust workspace (Cargo.toml lives here)
 , chdkptpSrc    # the sibling chdkptp_rs source tree (flake input)
@@ -40,6 +42,17 @@ let
   rustToolchain = rust-bin.nightly."2026-04-01".default.override {
     extensions = [ "rust-src" ];
     targets = [ "wasm32-unknown-unknown" ];
+  };
+
+  # `utoipa-swagger-ui`'s build script downloads the Swagger UI bundle from
+  # GitHub at build time — which the hermetic Nix sandbox (no network) blocks,
+  # so the build panics. Vendor the exact zip it wants via a fixed-output
+  # fetch and point the crate at it with a `file:` URL (SWAGGER_UI_DOWNLOAD_URL),
+  # which makes the build script skip the download. Bump the version + hash
+  # together if utoipa-swagger-ui is upgraded (see its build log for the URL).
+  swaggerUi = fetchurl {
+    url = "https://github.com/swagger-api/swagger-ui/archive/refs/tags/v5.17.12.zip";
+    hash = "sha256-HK4z/JI+1yq8BTBJveYXv9bpN/sXru7bn/8g5mf2B/I=";
   };
 
   # Reconstruct the on-disk layout that server/Cargo.toml's path dep expects:
@@ -83,11 +96,19 @@ rustPlatform.buildRustPackage {
     trunk
     wasm-bindgen-cli
     binaryen          # provides wasm-opt (trunk uses it in --release builds)
-    nodejs            # tailwind v4 runs via node
+    nodejs            # general node runtime (kept for any node-based tooling)
+    tailwindcss_4     # standalone Tailwind v4 CLI (v4.3.0); trunk finds it on
+                      # PATH the same way it finds wasm-bindgen/wasm-opt. Without
+                      # it, `trunk build --offline` fails: "couldn't find
+                      # application tailwindcss ... unable to download offline".
     makeWrapper
   ];
 
   buildInputs = [ udev ];
+
+  # Hand the vendored Swagger UI zip to utoipa-swagger-ui's build script so it
+  # doesn't try to hit the network. The `file:` URL makes it copy locally.
+  SWAGGER_UI_DOWNLOAD_URL = "file://${swaggerUi}";
 
   # Server compiles via cargo's default phase; we also need the wasm client.
   # `trunk build --offline` so it doesn't try to download anything during

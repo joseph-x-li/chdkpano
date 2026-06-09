@@ -3,7 +3,7 @@
     "chdkptp-src": {
       "flake": false,
       "locked": {
-        "narHash": "sha256-GZdJ/ZeC4j+PAWPes+WjBw9t0+szJ+nVGKu/tItMLzw=",
+        "narHash": "sha256-KWOJvUYwEijnYt/o70DZpYag9AMzOFMgqlepZ+P6kxM=",
         "path": "/Users/josephli/Github/chdkptp_rs",
         "type": "path"
       },

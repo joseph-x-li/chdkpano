@@ -11,12 +11,16 @@ leptos_ui = "0.3"
 tw_merge = { version = "0.1", features = ["variant"] }
 gloo-net = { version = "0.6", features = ["http"] }
 gloo-timers = { version = "0.3", features = ["futures"] }
-js-sys = "0.3"
+js-sys = "=0.3.98"
 serde.workspace = true
 serde_json.workspace = true
 console_error_panic_hook = "0.1"
 console_log = "1"
 log = "0.4"
-wasm-bindgen = "0.2"
+# Pinned to the wasm-bindgen 0.2.121 family (with js-sys/web-sys =0.3.98 below)
+# to match the wasm-bindgen-cli nixpkgs ships. The hermetic Nix build runs trunk
+# offline and can't fetch a newer CLI, so the crate must match the tool exactly.
+# Bump these together when nixpkgs' wasm-bindgen-cli advances.
+wasm-bindgen = "=0.2.121"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Blob", "HtmlImageElement", "HtmlInputElement", "HtmlTextAreaElement", "Url"] }
+web-sys = { version = "=0.3.98", features = ["Blob", "HtmlImageElement", "HtmlInputElement", "HtmlTextAreaElement", "Url"] }
