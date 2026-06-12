@@ -1,0 +1,6 @@
+# akaze 0.7 -> bitarray 0.2.6 enables `#![feature(min_const_generics)]`. That
+# feature stabilized in Rust 1.51, so the gate ERRORS on stable but only WARNS
+# (and compiles fine) on nightly. Hence: nightly. The default-off SIMD features
+# in bitarray are not enabled, so no genuinely-unstable features are used.
+[toolchain]
+channel = "nightly"

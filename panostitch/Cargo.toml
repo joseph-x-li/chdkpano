@@ -1,0 +1,27 @@
+[package]
+name = "panostitch"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Web server
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+
+# Stitching pipeline.
+# image + bitarray are pinned to the versions akaze 0.7 uses internally, so the
+# DynamicImage we hand to `extract` and the BitArray<64> descriptors it returns
+# are the *same* crate versions (no dual-version type mismatch). nalgebra is our
+# own (modern) copy, used only for the homography math — akaze never exposes its
+# nalgebra types to us (KeyPoint.point is a plain (f32, f32) tuple).
+akaze = "0.7"
+image = "0.23"
+bitarray = "0.2"
+nalgebra = "0.35"
+
+[profile.release]
+opt-level = 3
