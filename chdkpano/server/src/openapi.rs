@@ -7,7 +7,7 @@
 
 use utoipa::OpenApi;
 
-use crate::routes::{cameras, exec, files, live_state, pano, viewport, wifi};
+use crate::routes::{cameras, exec, files, live_state, pano, stitch, viewport, wifi};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -39,6 +39,7 @@ use crate::routes::{cameras, exec, files, live_state, pano, viewport, wifi};
         pano::autofill,
         pano::shoot_clocksync,
         pano::viewport_slot,
+        stitch::stitch,
         wifi::wifi_status,
         wifi::set_client,
     ),

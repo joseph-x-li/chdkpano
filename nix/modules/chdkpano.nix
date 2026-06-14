@@ -49,6 +49,18 @@ in
       default = "04a9";
       description = "USB vendor ID for the udev rule. 04a9 = Canon.";
     };
+
+    stitchUrl = lib.mkOption {
+      type = lib.types.str;
+      default = "http://localhost:3040";
+      example = "http://josephli-thinkpad-t14s-gen-1.tailefa2cc.ts.net:3040";
+      description = ''
+        Base URL of the `panostitch` service that `/api/stitch` hands the rig's
+        frames off to. Point this at the box running panostitch (e.g. the
+        ThinkPad over Tailscale). The Pi only forwards frames; stitching happens
+        there.
+      '';
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -103,6 +115,9 @@ in
         CHDKPANO_AP_SSID = config.networking.chdkpano.apSsid;
         CHDKPANO_AP_PASSWORD = config.networking.chdkpano.apPassword;
         CHDKPANO_AP_SUBNET = config.networking.chdkpano.apSubnet;
+
+        # Where /api/stitch forwards the rig's frames (the panostitch service).
+        CHDKPANO_STITCH_URL = cfg.stitchUrl;
       };
 
       # `wpa_cli` (to reconfigure the client radio) and `iw` (to read live

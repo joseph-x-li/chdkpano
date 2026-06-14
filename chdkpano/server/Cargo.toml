@@ -17,5 +17,9 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 parking_lot = "0.12"
 once_cell = "1"
 futures = "0.3"
+# HTTP client for the Pi -> panostitch handoff. No TLS backend: we only talk
+# plain http to a trusted Tailscale peer, which also keeps the hermetic Nix
+# build free of an OpenSSL dependency.
+reqwest = { version = "0.12", default-features = false, features = ["multipart"] }
 utoipa = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7", features = ["axum"] }

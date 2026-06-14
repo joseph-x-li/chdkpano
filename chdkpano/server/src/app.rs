@@ -68,6 +68,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pano/slot/:idx", put(routes::pano::assign_slot))
         .route("/api/pano/shoot_clocksync", post(routes::pano::shoot_clocksync))
         .route("/api/pano/viewport/:idx", get(routes::pano::viewport_slot))
+        // grab a frame per slot, hand off to the panostitch service, return the pano
+        .route("/api/stitch", post(routes::stitch::stitch))
         // ---- wifi (radio status + client reconfigure) ----
         .route("/api/wifi", get(routes::wifi::wifi_status))
         .route("/api/wifi/client", post(routes::wifi::set_client))
