@@ -75,6 +75,7 @@ fn App() -> impl IntoView {
                 <nav class="flex gap-4">
                     <A href="/" attr:class="text-sm text-muted-foreground hover:text-foreground">"Cameras"</A>
                     <A href="/pano" attr:class="text-sm text-muted-foreground hover:text-foreground">"Rig"</A>
+                    <A href="/capture" attr:class="text-sm text-muted-foreground hover:text-foreground">"Capture"</A>
                     <A href="/wifi" attr:class="text-sm text-muted-foreground hover:text-foreground">"WiFi"</A>
                 // In-app route that embeds the backend Swagger UI in an iframe,
                 // keeping this nav bar (vs. /swagger-ui/ which replaces the page).
@@ -85,6 +86,7 @@ fn App() -> impl IntoView {
                 <Routes fallback=|| "Not found">
                     <Route path=path!("/") view=CameraListPage/>
                     <Route path=path!("/pano") view=PanoPage/>
+                    <Route path=path!("/capture") view=CapturePage/>
                     <Route path=path!("/wifi") view=WifiPage/>
                     <Route path=path!("/api") view=ApiDocsPage/>
                     <Route path=path!("/camera/:serial") view=CameraDetailPage/>
@@ -923,6 +925,181 @@ async fn post_set_client(ssid: String, psk: String) -> Result<SetClientResultDto
     resp.json::<SetClientResultDto>()
         .await
         .map_err(|e| format!("decode: {e}"))
+}
+
+// ─── Capture & Stitch ──────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CameraCaptureDto {
+    slot: usize,
+    serial: Option<String>,
+    fired: bool,
+    camera_path: Option<String>,
+    file: Option<String>,
+    bytes: Option<usize>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StitchResultDto {
+    ok: bool,
+    inputs: usize,
+    result: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CaptureManifestDto {
+    id: String,
+    dir: String,
+    cameras: Vec<CameraCaptureDto>,
+    stitch: StitchResultDto,
+}
+
+async fn post_capture_stitch() -> Result<CaptureManifestDto, String> {
+    let resp = gloo_net::http::Request::post("/api/pano/capture_stitch")
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    if !resp.ok() {
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {} — {txt}", resp.status()));
+    }
+    resp.json::<CaptureManifestDto>()
+        .await
+        .map_err(|e| format!("decode: {e}"))
+}
+
+#[component]
+fn CapturePage() -> impl IntoView {
+    let (pending, set_pending) = signal(false);
+    let (result, set_result) = signal::<Option<Result<CaptureManifestDto, String>>>(None);
+
+    let run = move |_| {
+        set_pending.set(true);
+        set_result.set(None);
+        wasm_bindgen_futures::spawn_local(async move {
+            let r = post_capture_stitch().await;
+            set_result.set(Some(r));
+            set_pending.set(false);
+        });
+    };
+
+    view! {
+        <div class="flex items-baseline justify-between mb-2 gap-3">
+            <h2 class="text-base font-semibold">"Capture & Stitch"</h2>
+            <Button variant=ButtonVariant::Default on:click=run attr:disabled=move || pending.get()>
+                {move || if pending.get() { "Capturing…" } else { "Capture & Stitch" }}
+            </Button>
+        </div>
+        <p class="text-sm text-muted-foreground mb-5">
+            "Fires all four cameras, pulls the full-resolution frame from each one that fired, sends "
+            "them to the stitcher, and shows the panorama. Files + a manifest are saved per capture."
+        </p>
+
+        {move || pending.get().then(|| view! {
+            <p class="text-sm text-muted-foreground">
+                "Shooting, downloading full-res from each camera, and stitching… this can take a bit."
+            </p>
+        })}
+
+        {move || match result.get() {
+            None => ().into_any(),
+            Some(Err(e)) => view! { <p class="text-sm text-destructive">{format!("Error: {e}")}</p> }.into_any(),
+            Some(Ok(m)) => view! { <CaptureResult manifest=m/> }.into_any(),
+        }}
+    }
+}
+
+#[component]
+fn CaptureResult(manifest: CaptureManifestDto) -> impl IntoView {
+    let id = manifest.id.clone();
+    let stitch = manifest.stitch.clone();
+    let cameras = manifest.cameras.clone();
+    let json = serde_json::to_string_pretty(&manifest).unwrap_or_else(|_| "{}".into());
+
+    let pano_view = match (stitch.ok, stitch.result.clone()) {
+        (true, Some(file)) => view! {
+            <img
+                src=format!("/api/captures/{id}/{file}")
+                class="w-full rounded-md border border-border"
+                alt="stitched panorama"
+            />
+        }
+        .into_any(),
+        _ => view! {
+            <p class="text-sm text-destructive">
+                {format!("No panorama — {}", stitch.error.clone().unwrap_or_else(|| "stitch did not run".into()))}
+            </p>
+        }
+        .into_any(),
+    };
+
+    let cap_id = id.clone();
+    view! {
+        <section class="mb-6">
+            <h3 class="text-sm font-semibold mb-2">
+                {format!("Panorama ({} of {} cameras fired)", stitch.inputs, cameras.len())}
+            </h3>
+            {pano_view}
+        </section>
+
+        <section class="mb-6">
+            <h3 class="text-sm font-semibold mb-3">"Cameras"</h3>
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {cameras.into_iter().map(move |c| view! { <CameraCard cam=c capture_id=cap_id.clone()/> }).collect_view()}
+            </div>
+        </section>
+
+        <section>
+            <h3 class="text-sm font-semibold mb-2">"Manifest"</h3>
+            <pre class="text-xs bg-muted/40 border border-border rounded-md p-3 overflow-x-auto font-mono whitespace-pre">{json}</pre>
+        </section>
+    }
+}
+
+#[component]
+fn CameraCard(cam: CameraCaptureDto, capture_id: String) -> impl IntoView {
+    let slot = cam.slot;
+    let serial = cam.serial.clone().unwrap_or_else(|| "—".into());
+    let serial_title = serial.clone();
+    let (badge_cls, badge_txt) = if cam.fired {
+        ("text-green-500", "● fired")
+    } else {
+        ("text-muted-foreground", "○ no fire")
+    };
+
+    let thumb = match cam.file.clone() {
+        Some(file) => view! {
+            <img
+                src=format!("/api/captures/{capture_id}/{file}")
+                class="w-full aspect-square object-cover rounded bg-muted"
+                alt=format!("slot {slot}")
+            />
+        }
+        .into_any(),
+        None => view! {
+            <div class="w-full aspect-square rounded bg-muted flex items-center justify-center text-xs text-muted-foreground text-center px-2">
+                {cam.error.clone().unwrap_or_else(|| "no frame".into())}
+            </div>
+        }
+        .into_any(),
+    };
+
+    view! {
+        <div class="border border-border rounded-md p-2">
+            {thumb}
+            <div class="mt-2 text-xs space-y-0.5">
+                <div class="font-medium">
+                    {format!("Slot {slot}")} " " <span class=badge_cls>{badge_txt}</span>
+                </div>
+                <div class="font-mono text-muted-foreground break-all" title=serial_title>{serial}</div>
+                {cam.bytes.map(|b| view! {
+                    <div class="text-muted-foreground">{format!("{:.1} MB", b as f64 / 1.0e6)}</div>
+                })}
+            </div>
+        </div>
+    }
 }
 
 #[component]

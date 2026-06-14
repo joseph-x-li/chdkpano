@@ -68,6 +68,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pano/slot/:idx", put(routes::pano::assign_slot))
         .route("/api/pano/shoot_clocksync", post(routes::pano::shoot_clocksync))
         .route("/api/pano/viewport/:idx", get(routes::pano::viewport_slot))
+        // fire the rig, pull full-res from each camera, stitch, persist a manifest
+        .route("/api/pano/capture_stitch", post(routes::capture::capture_stitch))
+        .route("/api/captures/:id/:file", get(routes::capture::get_capture_file))
         // grab a frame per slot, hand off to the panostitch service, return the pano
         .route("/api/stitch", post(routes::stitch::stitch))
         // ---- wifi (radio status + client reconfigure) ----

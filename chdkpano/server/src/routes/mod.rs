@@ -2,6 +2,7 @@
 //! feature area. Wiring happens in `crate::app`.
 
 pub mod cameras;
+pub mod capture;
 pub mod exec;
 pub mod files;
 pub mod live_state;
